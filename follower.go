@@ -1,5 +1,7 @@
 package raft
 
+import "time"
+
 var _ server = (*follower)(nil)
 
 // follower 实现一致性模型在 Follower 下的行为
@@ -26,7 +28,7 @@ func (f *follower) Run() (server, error) {
 	}
 }
 
-func (f *follower) Commit(...Command) error {
+func (f *follower) Commit(timeout time.Duration, cmd ...Command) error {
 	return ErrIsNotLeader
 }
 

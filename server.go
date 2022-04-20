@@ -1,6 +1,9 @@
 package raft
 
-import "errors"
+import (
+	"errors"
+	"time"
+)
 
 var (
 	ErrIsNotLeader = errors.New("err: raft consensuse module isn't at Leader state")
@@ -11,7 +14,7 @@ type server interface {
 	// Run 启动, 若发生状态转换会返回转换后的服务
 	Run() (server, error)
 	// 提交命令cmd
-	Commit(cmd ...Command) error
+	Commit(timeout time.Duration, cmd ...Command) error
 	// 返回服务的状态信息: Follower/Candidate/Leader
 	String() string
 	// 重置计时器

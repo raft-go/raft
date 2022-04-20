@@ -9,7 +9,8 @@ import (
 )
 
 var (
-	ErrStopped = errors.New("err: raft consensus module has been stopped")
+	ErrStopped       = errors.New("err: raft consensus module has been stopped")
+	ErrCommitTimeout = errors.New("err: commit comands timeout")
 )
 
 // New 实例化一个 raft 一致性模型
@@ -56,8 +57,8 @@ type Raft interface {
 	// Done 是否已经停止
 	Done() <-chan struct{}
 
-	// 提交命令cmd
-	Commit(cmd ...Command) error
+	//  在 timeout 内完成提交命令cmd
+	Commit(timeout time.Duration, cmd ...Command) error
 	// 阻塞式获取服务未处理的的命令
 	GetCommands(ackTimeout time.Duration) (Commands, error)
 }
@@ -160,8 +161,8 @@ func (r *raft) Done() <-chan struct{} {
 	return r.done
 }
 
-func (r *raft) Commit(cmd ...Command) error {
-	return r.server.Commit(cmd...)
+func (r *raft) Commit(timeout time.Duration, cmd ...Command) error {
+	return r.server.Commit(timeout, cmd...)
 }
 
 // syncLeaderCommit 同步 Leader.CommitIndex
@@ -310,10 +311,22 @@ func (r *raft) ToCandidate() server {
 	return server
 }
 
+// ToLeader
 func (r *raft) ToLeader() server {
-	return &leader{
+	server := &leader{
 		raft: r,
 	}
+
+	// Volatile state on leaders:
+	// (Reinitialized after election)
+	lastLogIndex, _ := server.Last()
+	for raftId := range server.peers {
+		server.nextIndex.Store(raftId, lastLogIndex+1)
+		server.matchIndex.Store(raftId, 0)
+	}
+
+	server.ResetTimer()
+	return server
 }
 
 // HeartbeatTimout 心跳超时

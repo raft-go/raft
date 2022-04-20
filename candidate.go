@@ -3,6 +3,7 @@ package raft
 import (
 	logger "log"
 	"sync"
+	"time"
 )
 
 var _ server = (*candidate)(nil)
@@ -13,6 +14,16 @@ type candidate struct {
 }
 
 func (c *candidate) Run() (server, error) {
+	var count int
+	for range c.elect() {
+		count++
+		// • If votes received from
+		//   majority of servers: become leader
+		if count > len(c.peers)/2 {
+			return c.ToLeader(), nil
+		}
+	}
+
 	for {
 		select {
 		case <-c.Done():
@@ -26,21 +37,11 @@ func (c *candidate) Run() (server, error) {
 			if converted {
 				return server, nil
 			}
-		default:
-			var count int
-			for range c.elect() {
-				count++
-				// • If votes received from
-				//   majority of servers: become leader
-				if count > len(c.peers)/2 {
-					return c.ToLeader(), nil
-				}
-			}
 		}
 	}
 }
 
-func (c *candidate) Commit(...Command) error {
+func (c *candidate) Commit(timeout time.Duration, cmd ...Command) error {
 	return ErrIsNotLeader
 }
 
@@ -101,6 +102,8 @@ func (c *candidate) elect() <-chan struct{} {
 
 			wg.Add(1)
 			go func() {
+				defer wg.Done()
+
 				results, err := c.client.CallRequestVote(addr, args)
 				if err != nil {
 					logger.Printf("call requestVote, addr: %q, err: %+v", addr, err)
