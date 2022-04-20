@@ -2,8 +2,8 @@ package raft
 
 // RPCClient raft rpc client
 type RPCClient interface {
-	CallAppendEntries(addr string, args AppendEntriesArgs) (AppendEntriesResults, error)
-	CallRequestVote(addr string, args RequestVoteArgs) (RequestVoteResults, error)
+	CallAppendEntries(addr RaftAddr, args AppendEntriesArgs) (AppendEntriesResults, error)
+	CallRequestVote(addr RaftAddr, args RequestVoteArgs) (RequestVoteResults, error)
 }
 
 // RPCService raft rpc service
@@ -11,6 +11,23 @@ type RPCService interface {
 	AppendEntries(args AppendEntriesArgs, results *AppendEntriesResults) error
 	RequestVote(args RequestVoteArgs, results *RequestVoteResults) error
 }
+
+type rpcArgsType int8
+
+const (
+	_ rpcArgsType = iota
+	rpcArgsTypeAppendEntriesArgs
+	rpcArgsTypeRequestVoteArgs
+)
+
+// rpcArgs
+type rpcArgs interface {
+	GetType() rpcArgsType
+	GetTerm() int
+	GetCallerId() *RaftId
+}
+
+var _ rpcArgs = AppendEntriesArgs{}
 
 // AppendEntries RPC
 //
@@ -59,10 +76,25 @@ type AppendEntriesArgs struct {
 	LeaderCommit int
 }
 
+func (AppendEntriesArgs) GetType() rpcArgsType {
+	return rpcArgsTypeAppendEntriesArgs
+}
+
+func (a AppendEntriesArgs) GetTerm() int {
+	return a.Term
+}
+
+func (a AppendEntriesArgs) GetCallerId() *RaftId {
+	id := a.LeaderId
+	return &id
+}
+
 type AppendEntriesResults struct {
 	Term    int
 	Success bool
 }
+
+var _ rpcArgs = RequestVoteArgs{}
 
 // RequestVote RPC
 //
@@ -92,6 +124,19 @@ type RequestVoteArgs struct {
 	LastLogTerm  int
 }
 
+func (RequestVoteArgs) GetType() rpcArgsType {
+	return rpcArgsTypeRequestVoteArgs
+}
+
+func (a RequestVoteArgs) GetTerm() int {
+	return a.Term
+}
+
+func (a RequestVoteArgs) GetCallerId() *RaftId {
+	id := a.CandidateId
+	return &id
+}
+
 type RequestVoteResults struct {
 	Term        int
 	VoteGranted bool
@@ -116,7 +161,7 @@ type rpcService struct {
 // 	4. Append any new entries not already in the log
 // 	5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 func (s *rpcService) AppendEntries(args AppendEntriesArgs, results *AppendEntriesResults) error {
-	s.raft.sendRPCTerm(args.Term)
+	s.raft.sendRPCArgs(args)
 	s.server.ResetTimer()
 	defer func() { results.Term = s.GetCurrentTerm() }()
 
@@ -155,7 +200,7 @@ func (s *rpcService) AppendEntries(args AppendEntriesArgs, results *AppendEntrie
 // 	2. If votedFor is null or candidateId, and candidate’s log is at
 // 		least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
 func (s *rpcService) RequestVote(args RequestVoteArgs, results *RequestVoteResults) error {
-	s.raft.sendRPCTerm(args.Term)
+	s.sendRPCArgs(args)
 	s.server.ResetTimer()
 	defer func() {
 		results.Term = s.GetCurrentTerm()

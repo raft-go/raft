@@ -8,9 +8,7 @@ type follower struct {
 }
 
 func (f *follower) Run() (server, error) {
-	f.ResetTimer()
 	for {
-
 		select {
 		case <-f.Done():
 			return nil, ErrStopped
@@ -19,8 +17,8 @@ func (f *follower) Run() (server, error) {
 			// 	 RPC from current leader or granting vote to candidate:
 			// 		convert to candidate
 			return f.ToCandidate(), nil
-		case term := <-f.rpcTerm:
-			server, converted := f.reactToRPCTerm(term)
+		case args := <-f.rpcArgs:
+			server, converted := f.reactToRPCArgs(args)
 			if converted {
 				return server, nil
 			}

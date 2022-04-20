@@ -33,7 +33,7 @@ func New(id RaftId, peers map[RaftId]RaftAddr, optFns ...OptFn) Raft {
 		client:   opts.client,
 
 		applyCond: applyCond,
-		rpcTerm:   make(chan int, 1),
+		rpcArgs:   make(chan rpcArgs, 1),
 
 		peers:           peers,
 		electionTimeout: opts.election,
@@ -96,10 +96,10 @@ type raft struct {
 	// 当 commitIndex 更新时, 通过 applyCond 通知处理命令
 	applyCond *sync.Cond
 
-	// 存放 rpc term, 方便执行以下操作:
+	// 存放 rpc rpcArgs, 方便执行以下操作:
 	// If RPC request or response contains term T > currentTerm:
 	// set currentTerm = T, convert to follower (§5.1)
-	rpcTerm chan int
+	rpcArgs chan rpcArgs
 
 	// peers raft 节点
 	peers map[RaftId]RaftAddr
@@ -127,7 +127,7 @@ func (r *raft) Run() error {
 		return err
 	}
 
-	err = r.register(r.newServiceRPC())
+	err = r.register(r.newRPCService())
 	if err != nil {
 		return err
 	}
@@ -196,6 +196,8 @@ func (r *raft) syncLeaderCommit(leaderCommit int) {
 //			则会更新 lastApplied 为 commitIndex
 //			否则无任何作用
 func (r *raft) GetCommands(ackTimeout time.Duration) (commands Commands, err error) {
+	// FIXME: ackTimeout 要有什么限制?
+
 	// 若没有等待 Ack 的命令, 则等待信号
 	if atomic.LoadInt32(&r.waitAck) == 0 {
 		r.applyCond.L.Unlock()
@@ -232,27 +234,26 @@ func (r *raft) GetCommands(ackTimeout time.Duration) (commands Commands, err err
 	return commands, nil
 }
 
-// reactToRPCTerm
+// reactToRPCArgs
 //
 // 实现以下功能:
 // 		If RPC request or response contains term T > currentTerm:
 // 		set currentTerm = T, convert to follower (§5.1)
-func (r *raft) reactToRPCTerm(term int) (server server, converted bool) {
-	if term > r.GetCurrentTerm() {
-		r.SetCurrentTerm(term)
-		return r.ToFollower(), true
+func (r *raft) reactToRPCArgs(args rpcArgs) (server server, converted bool) {
+	if args.GetTerm() > r.GetCurrentTerm() {
+		return r.ToFollower(args.GetCallerId(), args.GetTerm()), true
 	}
 	return nil, false
 }
 
-// sendRPCTerm
-// 发送待反应的 rpc Term
-func (r *raft) sendRPCTerm(term int) {
-	if term <= r.GetCurrentTerm() {
+// sendRPCArgs
+// 发送待反应的 rpc Args
+func (r *raft) sendRPCArgs(args rpcArgs) {
+	if args.GetTerm() <= r.GetCurrentTerm() {
 		return
 	}
 	select {
-	case r.rpcTerm <- term:
+	case r.rpcArgs <- args:
 		// no-op
 	default:
 		// no-op
@@ -268,32 +269,51 @@ func (r *raft) Load() (server, error) {
 	if votedFor := r.GetVotedFor(); r.Id().Equal(votedFor) {
 		return r.ToLeader(), nil
 	}
-	return r.ToFollower(), nil
+	return r.ToFollower(r.GetVotedFor()), nil
 }
 
-func (r *raft) newServiceRPC() RPCService {
-	// TODO:
-	return nil
+func (r *raft) newRPCService() RPCService {
+	return &rpcService{
+		raft: r,
+	}
 }
 
-func (r *raft) ToFollower() server {
-	// TODO:
-	return nil
+func (r *raft) ToFollower(votedFor *RaftId, term ...int) server {
+	if len(term) > 0 {
+		r.SetCurrentTerm(term[0])
+	}
+	server := &follower{
+		raft: r,
+	}
+	server.ResetTimer()
+	return server
 }
 
+// ToCandidate
+//
+// • On conversion to candidate, start election:
+//
+// • Increment currentTerm
+//
+// • Vote for self
+//
+// • Reset election timer
 func (r *raft) ToCandidate() server {
 	nextTerm := r.GetCurrentTerm() + 1
 	r.SetCurrentTerm(nextTerm)
 	id := r.Id()
 	r.SetVotedFor(&id)
-	return &candidate{
+	server := &candidate{
 		raft: r,
 	}
+	server.ResetTimer()
+	return server
 }
 
 func (r *raft) ToLeader() server {
-	// TODO:
-	return nil
+	return &leader{
+		raft: r,
+	}
 }
 
 // HeartbeatTimout 心跳超时
