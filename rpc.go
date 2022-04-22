@@ -24,7 +24,7 @@ const (
 type rpcArgs interface {
 	GetType() rpcArgsType
 	GetTerm() int
-	GetCallerId() *RaftId
+	GetCallerId() RaftId
 }
 
 var _ rpcArgs = AppendEntriesArgs{}
@@ -84,9 +84,9 @@ func (a AppendEntriesArgs) GetTerm() int {
 	return a.Term
 }
 
-func (a AppendEntriesArgs) GetCallerId() *RaftId {
+func (a AppendEntriesArgs) GetCallerId() RaftId {
 	id := a.LeaderId
-	return &id
+	return id
 }
 
 type AppendEntriesResults struct {
@@ -132,9 +132,9 @@ func (a RequestVoteArgs) GetTerm() int {
 	return a.Term
 }
 
-func (a RequestVoteArgs) GetCallerId() *RaftId {
+func (a RequestVoteArgs) GetCallerId() RaftId {
 	id := a.CandidateId
-	return &id
+	return id
 }
 
 type RequestVoteResults struct {
@@ -205,7 +205,7 @@ func (s *rpcService) RequestVote(args RequestVoteArgs, results *RequestVoteResul
 	defer func() {
 		results.Term = s.GetCurrentTerm()
 		if results.VoteGranted {
-			s.SetVotedFor(&args.CandidateId)
+			s.SetVotedFor(args.CandidateId)
 		}
 	}()
 
@@ -216,7 +216,7 @@ func (s *rpcService) RequestVote(args RequestVoteArgs, results *RequestVoteResul
 	}
 	// 	2. If votedFor is null or candidateId, and candidate’s log is at
 	// 		least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
-	if votedFor := s.GetVotedFor(); votedFor == nil || args.CandidateId.Equal(votedFor) {
+	if votedFor := s.GetVotedFor(); votedFor.isNil() || args.CandidateId == votedFor {
 		// Raft determines which of two logs is more up-to-date
 		// by comparing the index and term of the last entries in the
 		// logs.

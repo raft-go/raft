@@ -14,7 +14,7 @@ var (
 )
 
 // New 实例化一个 raft 一致性模型
-func New(id RaftId, peers map[RaftId]RaftAddr, optFns ...OptFn) Raft {
+func New(id RaftId, store StableStore, log Log, peers map[RaftId]RaftAddr, optFns ...OptFn) (Raft, error) {
 	if len(peers) == 0 {
 		panic("peers can't  be nill")
 	}
@@ -24,11 +24,16 @@ func New(id RaftId, peers map[RaftId]RaftAddr, optFns ...OptFn) Raft {
 		fn(opts)
 	}
 
+	state, err := newState(store)
+	if err != nil {
+		return nil, err
+	}
 	applyCond := sync.NewCond(&sync.Mutex{})
 	raft := &raft{
 		id: id,
 
-		state: nil, // TODO:
+		state: state,
+		Log:   log,
 
 		register: opts.register,
 		client:   opts.client,
@@ -42,7 +47,7 @@ func New(id RaftId, peers map[RaftId]RaftAddr, optFns ...OptFn) Raft {
 		done: make(chan struct{}),
 	}
 
-	return raft
+	return raft, nil
 }
 
 // Raft raft 一致性模型
@@ -66,12 +71,8 @@ type Raft interface {
 // RaftId raft 一致性模型 id
 type RaftId string
 
-// Equal 比较两个 RaftId 是否相同
-func (id RaftId) Equal(i *RaftId) bool {
-	if i == nil {
-		return false
-	}
-	return id == *i
+func (id RaftId) isNil() bool {
+	return id == ""
 }
 
 // RaftAddr raft 一致性模型 rpc 通信地址
@@ -84,6 +85,7 @@ type raft struct {
 	id RaftId
 
 	state
+	Log
 
 	server
 
@@ -123,12 +125,14 @@ func (r *raft) Run() error {
 
 	r.initTicker()
 
-	server, err := r.Load()
-	if err != nil {
-		return err
+	var server server
+	if votedFor := r.GetVotedFor(); r.Id() == votedFor {
+		server = r.ToLeader()
+	} else {
+		server = r.ToFollower(votedFor)
 	}
 
-	err = r.register(r.newRPCService())
+	err := r.register(r.newRPCService())
 	if err != nil {
 		return err
 	}
@@ -173,7 +177,7 @@ func (r *raft) syncLeaderCommit(leaderCommit int) {
 		return
 	}
 	commitIndex := leaderCommit
-	lastIndex := r.Len()
+	lastIndex, _ := r.Last()
 	if lastIndex < commitIndex {
 		commitIndex = lastIndex
 	}
@@ -261,25 +265,13 @@ func (r *raft) sendRPCArgs(args rpcArgs) {
 	}
 }
 
-func (r *raft) Load() (server, error) {
-	err := r.state.Load()
-	if err != nil {
-		return nil, err
-	}
-
-	if votedFor := r.GetVotedFor(); r.Id().Equal(votedFor) {
-		return r.ToLeader(), nil
-	}
-	return r.ToFollower(r.GetVotedFor()), nil
-}
-
 func (r *raft) newRPCService() RPCService {
 	return &rpcService{
 		raft: r,
 	}
 }
 
-func (r *raft) ToFollower(votedFor *RaftId, term ...int) server {
+func (r *raft) ToFollower(votedFor RaftId, term ...int) server {
 	if len(term) > 0 {
 		r.SetCurrentTerm(term[0])
 	}
@@ -303,7 +295,7 @@ func (r *raft) ToCandidate() server {
 	nextTerm := r.GetCurrentTerm() + 1
 	r.SetCurrentTerm(nextTerm)
 	id := r.Id()
-	r.SetVotedFor(&id)
+	r.SetVotedFor(id)
 	server := &candidate{
 		raft: r,
 	}

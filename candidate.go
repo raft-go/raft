@@ -89,14 +89,14 @@ func (c *candidate) elect() <-chan struct{} {
 	}
 
 	voteCh := make(chan struct{}, len(c.peers))
-	voteCh <- struct{}{}
 
 	go func() {
 		defer close(voteCh)
 		var wg sync.WaitGroup
 		for id, addr := range c.peers {
 			id, addr := id, addr
-			if c.Id().Equal(&id) {
+			if c.Id() == id {
+				voteCh <- struct{}{}
 				continue
 			}
 

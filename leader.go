@@ -47,6 +47,10 @@ func (l *leader) Run() (server, error) {
 // Commit
 // 在 timeout 时间内完成提交客户端命令 cmd, 否则返回 ErrCommitTimeout
 func (l *leader) Commit(timeout time.Duration, cmd ...Command) error {
+	if len(cmd) == 0 {
+		return nil
+	}
+
 	// If command received from client: append entry to local log,
 	// respond after entry applied to state machine (§5.3)
 	entries := make([]LogEntry, len(cmd))
@@ -93,7 +97,7 @@ func (l *leader) callAppendEntriesWithAll(timeout time.Duration) error {
 
 		var wg sync.WaitGroup
 		for id, addr := range l.peers {
-			if l.Id().Equal(&id) {
+			if l.Id() == id {
 				replicateCh <- struct{}{}
 				continue
 			}
@@ -112,11 +116,10 @@ func (l *leader) callAppendEntriesWithAll(timeout time.Duration) error {
 
 					nextIndex, _ := l.nextIndex.Load(id)
 					prevLogIndex := nextIndex - 1
-					prevLogEntry, err := l.Get(prevLogIndex)
+					prevLogTerm, err := l.Get(prevLogIndex)
 					if err != nil && err != ErrLogEntryNotExists {
 						return
 					}
-					prevLogTerm := prevLogEntry.Term
 
 					var entries []LogEntry
 					// 为了避免 Figure 8 的问题
@@ -221,11 +224,11 @@ func (l *leader) calcCommitIndex() error {
 	if nextCommitIndex <= commitIndex {
 		return nil
 	}
-	entry, err := l.Get(nextCommitIndex)
+	nextTerm, err := l.Get(nextCommitIndex)
 	if err != nil {
 		return err
 	}
-	if entry.Term != l.GetCurrentTerm() {
+	if nextTerm != l.GetCurrentTerm() {
 		return nil
 	}
 	l.SetCommitIndex(nextCommitIndex)

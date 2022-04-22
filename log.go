@@ -8,13 +8,10 @@ var (
 	ErrLogEntryNotExists = errors.New("err: raft log entry not exits")
 )
 
-// log raft log
-// 	log entries;
-type log interface {
-	// Len 获取 raft log 长度
-	Len() int
-	// Get 获取 raft log 中索引为 i 的 log entry
-	Get(i int) (LogEntry, error)
+// Log raft log
+type Log interface {
+	// Get 获取 raft log 中索引为 index 的 log entry term
+	Get(index int) (term int, err error)
 	// Match 是否有匹配上 term 与 index 的 log entry
 	Match(index, term int) bool
 	// Last 返回最后一个 log entry 的 term 与 index
