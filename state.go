@@ -2,21 +2,7 @@ package raft
 
 import "sync"
 
-// StableStore is used to provide stable storage
-// of key configurations to ensure safety.
-type StableStore interface {
-	Set(key []byte, val []byte) error
-
-	// Get returns the value for key, or an empty byte slice if key was not found.
-	Get(key []byte) ([]byte, error)
-
-	SetInt(key []byte, val int) error
-
-	// GetInt returns the int value for key, or 0 if key was not found.
-	GetInt(key []byte) (int, error)
-}
-
-func newState(store StableStore) (*state_, error) {
+func newState(store Store) (*state_, error) {
 	s := &state_{
 		store: store,
 
@@ -74,7 +60,7 @@ var _ state = (*state_)(nil)
 type state_ struct {
 	mu sync.Mutex
 
-	store StableStore
+	store Store
 
 	keyCurrentTerm []byte
 	keyVotedFor    []byte

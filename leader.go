@@ -235,7 +235,7 @@ func (l *leader) calcCommitIndex() error {
 
 	// if commitIndex > lastApplied: increment lastApplied, apply
 	// log[lastApplied] to state machine (§5.3)
-	l.applyCond.Signal()
+	l.commitCond.Signal()
 
 	return nil
 }

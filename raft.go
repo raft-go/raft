@@ -4,7 +4,6 @@ import (
 	"errors"
 	"math/rand"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -14,7 +13,7 @@ var (
 )
 
 // New 实例化一个 raft 一致性模型
-func New(id RaftId, store StableStore, log Log, peers map[RaftId]RaftAddr, optFns ...OptFn) (Raft, error) {
+func New(id RaftId, store Store, log Log, peers map[RaftId]RaftAddr, optFns ...OptFn) (Raft, error) {
 	if len(peers) == 0 {
 		panic("peers can't  be nill")
 	}
@@ -28,7 +27,7 @@ func New(id RaftId, store StableStore, log Log, peers map[RaftId]RaftAddr, optFn
 	if err != nil {
 		return nil, err
 	}
-	applyCond := sync.NewCond(&sync.Mutex{})
+	commitCond := sync.NewCond(&sync.Mutex{})
 	raft := &raft{
 		id: id,
 
@@ -38,8 +37,8 @@ func New(id RaftId, store StableStore, log Log, peers map[RaftId]RaftAddr, optFn
 		register: opts.register,
 		client:   opts.client,
 
-		applyCond: applyCond,
-		rpcArgs:   make(chan rpcArgs, 1),
+		commitCond: commitCond,
+		rpcArgs:    make(chan rpcArgs, 1),
 
 		peers:           peers,
 		electionTimeout: opts.election,
@@ -65,7 +64,7 @@ type Raft interface {
 	//  在 timeout 内完成提交命令cmd
 	Commit(timeout time.Duration, cmd ...Command) error
 	// 阻塞式获取服务未处理的的命令
-	GetCommands(ackTimeout time.Duration) (Commands, error)
+	ApplyCommands(apply Apply) error
 }
 
 // RaftId raft 一致性模型 id
@@ -94,10 +93,8 @@ type raft struct {
 	// rpc 服务客户端
 	client RPCClient
 
-	// 0表示无命令等待 Ack, 否则表示有
-	waitAck int32
-	// 当 commitIndex 更新时, 通过 applyCond 通知处理命令
-	applyCond *sync.Cond
+	// 通知 commitIndex 更新事件发生
+	commitCond *sync.Cond
 
 	// 存放 rpc rpcArgs, 方便执行以下操作:
 	// If RPC request or response contains term T > currentTerm:
@@ -185,58 +182,50 @@ func (r *raft) syncLeaderCommit(leaderCommit int) {
 
 	// if commitIndex > lastApplied: increment lastApplied, apply
 	// log[lastApplied] to state machine (§5.3)
-	r.applyCond.Signal()
+	r.commitCond.Signal()
 }
 
-// GetCommands
+// Apply 依序应用 commands 到状态机中
+// 返回 应用的 Command 数量 appliedCount
+type Apply func(commands Commands) (appliedCount int, err error)
+
+// ApplyCommands
 //
 // Implementation:
 // 		If commitIndex > lastApplied: increment lastApplied, apply
 // 		log[lastApplied] to state machine(§5.3)
-//
-// 实现逻辑:
-// 		1. 若有命令等待 Ack , 则不等待, 否则等待 r.applyCond.Wait()
-//		2. 获取已经提交且没有 apply 的命令, 生成返回 commands
-//		3. 若在 ackTimeout 内调用了 commands.Ack 方法,
-//			则会更新 lastApplied 为 commitIndex
-//			否则无任何作用
-func (r *raft) GetCommands(ackTimeout time.Duration) (commands Commands, err error) {
-	// FIXME: ackTimeout 要有什么限制?
+func (r *raft) ApplyCommands(apply Apply) (err error) {
+	r.commitCond.L.Lock()
+	defer r.commitCond.L.Unlock()
 
-	// 若没有等待 Ack 的命令, 则等待信号
-	if atomic.LoadInt32(&r.waitAck) == 0 {
-		r.applyCond.L.Unlock()
-		defer r.applyCond.L.Lock()
-		r.applyCond.Wait()
+	// 等待, 直到 commitIndex 更新
+	var commitIndex, lastApplied int
+	for commitIndex <= lastApplied {
+		r.commitCond.Wait()
+		commitIndex, lastApplied = r.GetCommitIndex(), r.GetLastApplied()
 	}
 
-	// 获取已经提交, 但没有 apply 的命令
-	commitIndex, lastApplied := r.GetCommitIndex(), r.GetLastApplied()
-	if commitIndex <= lastApplied {
-		return nil, err
-	}
+	// 获取已 commit 且没 apply 的命令
 	entries, err := r.RangeGet(lastApplied, commitIndex)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	var data []Command
 	for i := range entries {
 		data = append(data, entries[i].Command)
 	}
+	commands := newCommands(data)
 
-	timer := time.NewTimer(ackTimeout)
-	ack := func() error {
-		// 若未超时
-		if timer.Stop() {
-			atomic.StoreInt32(&r.waitAck, 0) // 标记无命令等待 Ack
-			r.SetLastApplied(commitIndex)    // 更新 lastApplied
-		}
-		return nil
+	// apply
+	appliedCount, err := apply(commands)
+	if err != nil {
+		return err
 	}
-	commands = newCommands(data, ack)
-	atomic.StoreInt32(&r.waitAck, 1) // 标记有命令等待 Ack
 
-	return commands, nil
+	// update lastApplied
+	lastApplied += appliedCount
+	r.SetLastApplied(lastApplied)
+	return nil
 }
 
 // reactToRPCArgs
