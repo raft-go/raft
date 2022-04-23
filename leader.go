@@ -1,10 +1,10 @@
 package raft
 
 import (
+	"context"
 	logger "log"
 	"sort"
 	"sync"
-	"time"
 )
 
 var _ server = (*leader)(nil)
@@ -28,8 +28,10 @@ type leader struct {
 func (l *leader) Run() (server, error) {
 	// Upon election: send initial empty AppendEntries RPC
 	// (heartbeat) to each server
-	timeout := l.HeartbeatTimout() / 2
-	_ = l.callAppendEntriesWithAll(timeout)
+	err := l.sendHeartbeats()
+	if err != nil {
+		return nil, err
+	}
 
 	for {
 		select {
@@ -38,15 +40,20 @@ func (l *leader) Run() (server, error) {
 		case <-l.ticker.C:
 			// repeat during idle periods to
 			// prevent election timeouts (§5.2)
-			timeout := l.HeartbeatTimout() / 2
-			_ = l.callAppendEntriesWithAll(timeout)
+			err := l.sendHeartbeats()
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 }
 
-// Commit
-// 在 timeout 时间内完成提交客户端命令 cmd, 否则返回 ErrCommitTimeout
-func (l *leader) Commit(timeout time.Duration, cmd ...Command) error {
+// Handle
+// append entry to local log,
+// respond after entry applied to state machine (§5.3)
+//
+// commit log entry -->  log replication --> apply 客户端命令 cmd
+func (l *leader) Handle(ctx context.Context, cmd ...Command) error {
 	if len(cmd) == 0 {
 		return nil
 	}
@@ -66,7 +73,40 @@ func (l *leader) Commit(timeout time.Duration, cmd ...Command) error {
 		return err
 	}
 
-	return l.callAppendEntriesWithAll(timeout)
+	err = l.replicate(ctx)
+	if err != nil {
+		return err
+	}
+	ok, err := l.refreshCommitIndex()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+
+	return l.ApplyCommitted()
+}
+
+func (l *leader) sendHeartbeats() error {
+	timeout := l.HeartbeatTimout() / 2
+	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	err := l.replicate(ctx)
+	if err != nil {
+		return err
+	}
+	ok, err := l.refreshCommitIndex()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	l.commitCond.Signal()
+	return nil
 }
 
 // ResetTimer
@@ -84,14 +124,11 @@ func (*leader) String() string {
 	return "Leader"
 }
 
-// callAppendEntriesWithAll
-//
-// 若没有在 timeout 时间内完成复制到大部分的 follower, 返回 ErrCommitTimeout
-func (l *leader) callAppendEntriesWithAll(timeout time.Duration) error {
-	var done = make(chan struct{})
-	time.AfterFunc(timeout, func() { close(done) })
-
+// replicate
+// replicate log entries
+func (l *leader) replicate(ctx context.Context) error {
 	replicateCh := make(chan struct{}, len(l.peers))
+
 	go func() {
 		defer close(replicateCh)
 
@@ -108,7 +145,7 @@ func (l *leader) callAppendEntriesWithAll(timeout time.Duration) error {
 
 				for {
 					select {
-					case <-done:
+					case <-ctx.Done():
 						return
 					default:
 						// no-op
@@ -131,10 +168,11 @@ func (l *leader) callAppendEntriesWithAll(timeout time.Duration) error {
 						// If last log index ≥ nextIndex for a follower: send
 						// AppendEntries RPC with log entries starting at nextIndex
 						if lastLogIndex >= nextIndex {
-							entries, err = l.RangeGet(nextIndex-1, lastLogIndex)
+							start, end := nextIndex-1, lastLogIndex
+							entries, err = l.RangeGet(start, end)
 							if err != nil {
-								logger.Println(err)
-								return
+								logger.Printf("RangeGet(%d, %d), err: %+v", start, end, err)
+								continue
 							}
 						}
 					}
@@ -163,7 +201,6 @@ func (l *leader) callAppendEntriesWithAll(timeout time.Duration) error {
 						}
 						l.matchIndex.Store(id, prevLogIndex)
 						replicateCh <- struct{}{}
-						l.calcCommitIndex()
 						return
 					}
 					// If AppendEntries fails because of log inconsistency:
@@ -178,8 +215,8 @@ func (l *leader) callAppendEntriesWithAll(timeout time.Duration) error {
 	var count int
 	for {
 		select {
-		case <-done:
-			return ErrCommitTimeout
+		case <-ctx.Done():
+			return ctx.Err()
 		case <-replicateCh:
 			count++
 			if count > len(l.peers)/2 {
@@ -189,8 +226,12 @@ func (l *leader) callAppendEntriesWithAll(timeout time.Duration) error {
 	}
 }
 
-// calcCommitIndex
-func (l *leader) calcCommitIndex() error {
+// refreshCommitIndex
+//
+// If there exists an N such that N > commitIndex, a majority
+// of matchIndex[i] ≥ N, and log[N].term == currentTerm:
+// set commitIndex = N (§5.3, §5.4).
+func (l *leader) refreshCommitIndex() (bool, error) {
 	// Raft never commits log entries from previous terms by count-
 	// ing replicas. Only log entries from the leader’s current
 	// term are committed by counting replicas; once an entry
@@ -203,7 +244,7 @@ func (l *leader) calcCommitIndex() error {
 	// for simplicity
 	_, lastLogTerm := l.Last()
 	if lastLogTerm != l.GetCurrentTerm() {
-		return nil
+		return false, nil
 	}
 
 	// If there exists an N such that N > commitIndex, a majority
@@ -222,22 +263,17 @@ func (l *leader) calcCommitIndex() error {
 	nextCommitIndex := matchIndex[mid]
 
 	if nextCommitIndex <= commitIndex {
-		return nil
+		return false, nil
 	}
 	nextTerm, err := l.Get(nextCommitIndex)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if nextTerm != l.GetCurrentTerm() {
-		return nil
+		return false, nil
 	}
 	l.SetCommitIndex(nextCommitIndex)
-
-	// if commitIndex > lastApplied: increment lastApplied, apply
-	// log[lastApplied] to state machine (§5.3)
-	l.commitCond.Signal()
-
-	return nil
+	return true, nil
 }
 
 type raftIdIndexMap struct {

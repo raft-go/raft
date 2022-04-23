@@ -1,6 +1,6 @@
 package raft
 
-import "time"
+import "context"
 
 var _ server = (*follower)(nil)
 
@@ -28,7 +28,7 @@ func (f *follower) Run() (server, error) {
 	}
 }
 
-func (f *follower) Commit(timeout time.Duration, cmd ...Command) error {
+func (f *follower) Handle(context.Context, ...Command) error {
 	return ErrIsNotLeader
 }
 

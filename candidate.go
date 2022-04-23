@@ -1,9 +1,9 @@
 package raft
 
 import (
+	"context"
 	logger "log"
 	"sync"
-	"time"
 )
 
 var _ server = (*candidate)(nil)
@@ -41,7 +41,7 @@ func (c *candidate) Run() (server, error) {
 	}
 }
 
-func (c *candidate) Commit(timeout time.Duration, cmd ...Command) error {
+func (c *candidate) Handle(context.Context, ...Command) error {
 	return ErrIsNotLeader
 }
 

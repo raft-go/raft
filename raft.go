@@ -1,19 +1,20 @@
 package raft
 
 import (
+	"context"
 	"errors"
+	logger "log"
 	"math/rand"
 	"sync"
 	"time"
 )
 
 var (
-	ErrStopped       = errors.New("err: raft consensus module has been stopped")
-	ErrCommitTimeout = errors.New("err: commit comands timeout")
+	ErrStopped = errors.New("err: raft consensus module has been stopped")
 )
 
 // New 实例化一个 raft 一致性模型
-func New(id RaftId, store Store, log Log, peers map[RaftId]RaftAddr, optFns ...OptFn) (Raft, error) {
+func New(id RaftId, apply Apply, store Store, log Log, peers map[RaftId]RaftAddr, optFns ...OptFn) (Raft, error) {
 	if len(peers) == 0 {
 		panic("peers can't  be nill")
 	}
@@ -33,6 +34,8 @@ func New(id RaftId, store Store, log Log, peers map[RaftId]RaftAddr, optFns ...O
 
 		state: state,
 		Log:   log,
+
+		apply: apply,
 
 		register: opts.register,
 		client:   opts.client,
@@ -61,10 +64,10 @@ type Raft interface {
 	// Done 是否已经停止
 	Done() <-chan struct{}
 
-	//  在 timeout 内完成提交命令cmd
-	Commit(timeout time.Duration, cmd ...Command) error
-	// 阻塞式获取服务未处理的的命令
-	ApplyCommands(apply Apply) error
+	// Handle 处理 cmd
+	//
+	// commit log entry --> log replication --> apply to state matchine
+	Handle(ctx context.Context, cmd ...Command) error
 }
 
 // RaftId raft 一致性模型 id
@@ -85,6 +88,8 @@ type raft struct {
 
 	state
 	Log
+
+	apply Apply
 
 	server
 
@@ -134,6 +139,8 @@ func (r *raft) Run() error {
 		return err
 	}
 
+	go r.loopApplyCommitted()
+
 	for {
 		server, err = server.Run()
 		if err != nil {
@@ -162,8 +169,35 @@ func (r *raft) Done() <-chan struct{} {
 	return r.done
 }
 
-func (r *raft) Commit(timeout time.Duration, cmd ...Command) error {
-	return r.server.Commit(timeout, cmd...)
+func (r *raft) Handle(ctx context.Context, cmd ...Command) error {
+	return r.server.Handle(ctx, cmd...)
+}
+
+func (r *raft) loopApplyCommitted() {
+	for {
+		select {
+		case <-r.done:
+			return
+		default:
+			// no-op
+		}
+
+		func() {
+			r.commitCond.L.Lock()
+			defer r.commitCond.L.Unlock()
+
+			var lastApplied, commitIndex int
+			for lastApplied <= commitIndex {
+				r.commitCond.Wait()
+				commitIndex, lastApplied = r.GetCommitIndex(), r.GetLastApplied()
+			}
+
+			err := r.ApplyCommitted()
+			if err != nil {
+				logger.Printf("apply commands, err: %+v", err)
+			}
+		}()
+	}
 }
 
 // syncLeaderCommit 同步 Leader.CommitIndex
@@ -180,8 +214,7 @@ func (r *raft) syncLeaderCommit(leaderCommit int) {
 	}
 	r.state.SetCommitIndex(commitIndex)
 
-	// if commitIndex > lastApplied: increment lastApplied, apply
-	// log[lastApplied] to state machine (§5.3)
+	// 通知 commitIndex 更新事件发生
 	r.commitCond.Signal()
 }
 
@@ -189,22 +222,16 @@ func (r *raft) syncLeaderCommit(leaderCommit int) {
 // 返回 应用的 Command 数量 appliedCount
 type Apply func(commands Commands) (appliedCount int, err error)
 
-// ApplyCommands
+// ApplyCommitted
 //
 // Implementation:
 // 		If commitIndex > lastApplied: increment lastApplied, apply
 // 		log[lastApplied] to state machine(§5.3)
-func (r *raft) ApplyCommands(apply Apply) (err error) {
-	r.commitCond.L.Lock()
-	defer r.commitCond.L.Unlock()
-
-	// 等待, 直到 commitIndex 更新
+func (r *raft) ApplyCommitted() error {
 	var commitIndex, lastApplied int
-	for commitIndex <= lastApplied {
-		r.commitCond.Wait()
+	if commitIndex <= lastApplied {
 		commitIndex, lastApplied = r.GetCommitIndex(), r.GetLastApplied()
 	}
-
 	// 获取已 commit 且没 apply 的命令
 	entries, err := r.RangeGet(lastApplied, commitIndex)
 	if err != nil {
@@ -217,7 +244,7 @@ func (r *raft) ApplyCommands(apply Apply) (err error) {
 	commands := newCommands(data)
 
 	// apply
-	appliedCount, err := apply(commands)
+	appliedCount, err := r.apply(commands)
 	if err != nil {
 		return err
 	}
