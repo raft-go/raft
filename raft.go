@@ -66,7 +66,7 @@ type Raft interface {
 
 	// Handle 处理 cmd
 	//
-	// commit log entry --> log replication --> apply to state matchine
+	// append log entry --> log replication --> apply to state matchine
 	Handle(ctx context.Context, cmd ...Command) error
 }
 
@@ -122,19 +122,22 @@ func (r *raft) Id() RaftId {
 	return r.id
 }
 
-func (r *raft) Run() error {
+func (r *raft) Run() (err error) {
 	rand.Seed(time.Now().UnixNano())
 
 	r.initTicker()
 
 	var server server
 	if votedFor := r.GetVotedFor(); r.Id() == votedFor {
-		server = r.ToLeader()
+		server, err = r.ToLeader()
+		if err != nil {
+			return err
+		}
 	} else {
 		server = r.ToFollower(votedFor)
 	}
 
-	err := r.register(r.newRPCService())
+	err = r.register(r.newRPCService())
 	if err != nil {
 		return err
 	}
@@ -201,14 +204,17 @@ func (r *raft) loopApplyCommitted() {
 }
 
 // syncLeaderCommit 同步 Leader.CommitIndex
-func (r *raft) syncLeaderCommit(leaderCommit int) {
+func (r *raft) syncLeaderCommit(leaderCommit int) error {
 	// 	If leaderCommit > commitIndex,
 	//	set commitIndex = min(leaderCommit, index of last new entry)
 	if leaderCommit <= r.GetCommitIndex() {
-		return
+		return nil
 	}
 	commitIndex := leaderCommit
-	lastIndex, _ := r.Last()
+	lastIndex, _, err := r.Last()
+	if err != nil {
+		return err
+	}
 	if lastIndex < commitIndex {
 		commitIndex = lastIndex
 	}
@@ -216,6 +222,7 @@ func (r *raft) syncLeaderCommit(leaderCommit int) {
 
 	// 通知 commitIndex 更新事件发生
 	r.commitCond.Signal()
+	return nil
 }
 
 // Apply 依序应用 commands 到状态机中
@@ -261,8 +268,8 @@ func (r *raft) ApplyCommitted() error {
 // 		If RPC request or response contains term T > currentTerm:
 // 		set currentTerm = T, convert to follower (§5.1)
 func (r *raft) reactToRPCArgs(args rpcArgs) (server server, converted bool) {
-	if args.GetTerm() > r.GetCurrentTerm() {
-		return r.ToFollower(args.GetCallerId(), args.GetTerm()), true
+	if args.getTerm() > r.GetCurrentTerm() {
+		return r.ToFollower(args.getCallerId(), args.getTerm()), true
 	}
 	return nil, false
 }
@@ -270,7 +277,7 @@ func (r *raft) reactToRPCArgs(args rpcArgs) (server server, converted bool) {
 // sendRPCArgs
 // 发送待反应的 rpc Args
 func (r *raft) sendRPCArgs(args rpcArgs) {
-	if args.GetTerm() <= r.GetCurrentTerm() {
+	if args.getTerm() <= r.GetCurrentTerm() {
 		return
 	}
 	select {
@@ -320,21 +327,24 @@ func (r *raft) ToCandidate() server {
 }
 
 // ToLeader
-func (r *raft) ToLeader() server {
+func (r *raft) ToLeader() (server, error) {
 	server := &leader{
 		raft: r,
 	}
 
 	// Volatile state on leaders:
 	// (Reinitialized after election)
-	lastLogIndex, _ := server.Last()
+	lastLogIndex, _, err := server.Last()
+	if err != nil {
+		return nil, err
+	}
 	for raftId := range server.peers {
 		server.nextIndex.Store(raftId, lastLogIndex+1)
 		server.matchIndex.Store(raftId, 0)
 	}
 
 	server.ResetTimer()
-	return server
+	return server, nil
 }
 
 // HeartbeatTimout 心跳超时

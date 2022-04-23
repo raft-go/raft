@@ -52,7 +52,7 @@ func (l *leader) Run() (server, error) {
 // append entry to local log,
 // respond after entry applied to state machine (§5.3)
 //
-// commit log entry -->  log replication --> apply 客户端命令 cmd
+// append log entry -->  log replication --> apply 客户端命令 cmd
 func (l *leader) Handle(ctx context.Context, cmd ...Command) error {
 	if len(cmd) == 0 {
 		return nil
@@ -154,7 +154,7 @@ func (l *leader) replicate(ctx context.Context) error {
 					nextIndex, _ := l.nextIndex.Load(id)
 					prevLogIndex := nextIndex - 1
 					prevLogTerm, err := l.Get(prevLogIndex)
-					if err != nil && err != ErrLogEntryNotExists {
+					if err != nil {
 						return
 					}
 
@@ -162,7 +162,11 @@ func (l *leader) replicate(ctx context.Context) error {
 					// 为了避免 Figure 8 的问题
 					// 若最新 log entry 的 term 不是 currentTerm
 					// 则不复制
-					lastLogIndex, lastLogTerm := l.Last()
+					lastLogIndex, lastLogTerm, err := l.Last()
+					if err != nil {
+						logger.Printf("get last entry, err : %+v", err)
+						continue
+					}
 					if lastLogTerm == l.GetCurrentTerm() {
 						// FIXME: 什么时候会出现 last log index < next ?
 						// If last log index ≥ nextIndex for a follower: send
@@ -242,7 +246,10 @@ func (l *leader) refreshCommitIndex() (bool, error) {
 	// try is committed (for example, if that entry is stored on ev-
 	// ery server), but Raft takes a more conservative approach
 	// for simplicity
-	_, lastLogTerm := l.Last()
+	_, lastLogTerm, err := l.Last()
+	if err != nil {
+		return false, err
+	}
 	if lastLogTerm != l.GetCurrentTerm() {
 		return false, nil
 	}

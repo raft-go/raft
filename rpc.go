@@ -22,9 +22,9 @@ const (
 
 // rpcArgs
 type rpcArgs interface {
-	GetType() rpcArgsType
-	GetTerm() int
-	GetCallerId() RaftId
+	getType() rpcArgsType
+	getTerm() int
+	getCallerId() RaftId
 }
 
 var _ rpcArgs = AppendEntriesArgs{}
@@ -76,15 +76,15 @@ type AppendEntriesArgs struct {
 	LeaderCommit int
 }
 
-func (AppendEntriesArgs) GetType() rpcArgsType {
+func (AppendEntriesArgs) getType() rpcArgsType {
 	return rpcArgsTypeAppendEntriesArgs
 }
 
-func (a AppendEntriesArgs) GetTerm() int {
+func (a AppendEntriesArgs) getTerm() int {
 	return a.Term
 }
 
-func (a AppendEntriesArgs) GetCallerId() RaftId {
+func (a AppendEntriesArgs) getCallerId() RaftId {
 	id := a.LeaderId
 	return id
 }
@@ -124,15 +124,15 @@ type RequestVoteArgs struct {
 	LastLogTerm  int
 }
 
-func (RequestVoteArgs) GetType() rpcArgsType {
+func (RequestVoteArgs) getType() rpcArgsType {
 	return rpcArgsTypeRequestVoteArgs
 }
 
-func (a RequestVoteArgs) GetTerm() int {
+func (a RequestVoteArgs) getTerm() int {
 	return a.Term
 }
 
-func (a RequestVoteArgs) GetCallerId() RaftId {
+func (a RequestVoteArgs) getCallerId() RaftId {
 	id := a.CandidateId
 	return id
 }
@@ -172,13 +172,17 @@ func (s *rpcService) AppendEntries(args AppendEntriesArgs, results *AppendEntrie
 	}
 	// 	2. Reply false if log doesn’t contain an entry at prevLogIndex
 	// 		whose term matches prevLogTerm (§5.3)
-	if !s.Match(args.PrevLogIndex, args.PrevLogTerm) {
+	match, err := s.Match(args.PrevLogIndex, args.PrevLogTerm)
+	if err != nil {
+		return err
+	}
+	if !match {
 		return nil
 	}
 	// 	3. If an existing entry conflicts with a new one (same index
 	// 		but different terms), delete the existing entry and all that follow it (§5.3)
 	// 	4. Append any new entries not already in the log
-	err := s.PopAfter(args.PrevLogIndex)
+	err = s.PopAfter(args.PrevLogIndex)
 	if err != nil {
 		return err
 	}
@@ -226,7 +230,10 @@ func (s *rpcService) RequestVote(args RequestVoteArgs, results *RequestVoteResul
 		//
 		// If the logs end with the same term, then whichever log is longer is
 		// more up-to-date.
-		index, term := s.Last()
+		index, term, err := s.Last()
+		if err != nil {
+			return err
+		}
 		if term < args.LastLogTerm {
 			results.VoteGranted = true
 			return nil

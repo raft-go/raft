@@ -1,23 +1,17 @@
 package raft
 
-import (
-	"errors"
-)
-
-var (
-	ErrLogEntryNotExists = errors.New("err: raft log entry not exits")
-)
-
 // Log raft log
 type Log interface {
 	// Get 获取 raft log 中索引为 index 的 log entry term
+	// 若无, 则返回 0, nil
 	Get(index int) (term int, err error)
 	// Match 是否有匹配上 term 与 index 的 log entry
-	Match(index, term int) bool
+	Match(index, term int) (bool, error)
 	// Last 返回最后一个 log entry 的 term 与 index
 	// 若无, 则返回 0 , 0
-	Last() (index, term int)
+	Last() (index, term int, err error)
 	// RangeGet 获取在 (i, j] 索引区间的 log entry
+	// 若无, 则返回 nil, nil
 	RangeGet(i, j int) ([]LogEntry, error)
 	// PopAfter 删除索引 i 之后的所有 log entry
 	PopAfter(i int) error

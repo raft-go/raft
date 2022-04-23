@@ -14,7 +14,7 @@ type server interface {
 	// Run 启动, 若发生状态转换会返回转换后的服务
 	Run() (server, error)
 	// 处理命令
-	// 提交命令 --> 日志复制 --> 日志应用
+	// append cmd --> 日志复制 --> 日志应用
 	Handle(ctx context.Context, cmd ...Command) error
 	// 返回服务的状态信息: Follower/Candidate/Leader
 	String() string

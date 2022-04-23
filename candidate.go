@@ -15,12 +15,16 @@ type candidate struct {
 
 func (c *candidate) Run() (server, error) {
 	var count int
-	for range c.elect() {
+	voteCh, err := c.elect()
+	if err != nil {
+		return nil, err
+	}
+	for range voteCh {
 		count++
 		// • If votes received from
 		//   majority of servers: become leader
 		if count > len(c.peers)/2 {
-			return c.ToLeader(), nil
+			return c.ToLeader()
 		}
 	}
 
@@ -66,9 +70,9 @@ func (c *candidate) String() string {
 // 	state. If the term in the RPC is smaller than the candidate’s
 // 	current term, then the candidate rejects the RPC and continues in candidate state.
 func (c *candidate) reactToRPCArgs(args rpcArgs) (server server, converted bool) {
-	if args.GetType() == rpcArgsTypeAppendEntriesArgs {
-		if args.GetTerm() >= c.GetCurrentTerm() {
-			return c.ToFollower(args.GetCallerId()), true
+	if args.getType() == rpcArgsTypeAppendEntriesArgs {
+		if args.getTerm() >= c.GetCurrentTerm() {
+			return c.ToFollower(args.getCallerId()), true
 		} else {
 			return nil, false
 		}
@@ -79,8 +83,12 @@ func (c *candidate) reactToRPCArgs(args rpcArgs) (server server, converted bool)
 // elect
 //
 // Send RequestVote RPCs to all other servers
-func (c *candidate) elect() <-chan struct{} {
-	lastLogIndex, lastLogTerm := c.Last()
+func (c *candidate) elect() (<-chan struct{}, error) {
+	lastLogIndex, lastLogTerm, err := c.Last()
+	if err != nil {
+		return nil, err
+	}
+
 	args := RequestVoteArgs{
 		Term:         c.GetCurrentTerm(),
 		CandidateId:  c.Id(),
@@ -117,5 +125,5 @@ func (c *candidate) elect() <-chan struct{} {
 		wg.Wait()
 	}()
 
-	return voteCh
+	return voteCh, nil
 }
