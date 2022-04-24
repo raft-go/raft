@@ -1,5 +1,7 @@
 package raft
 
+import "time"
+
 // Log raft log
 type Log interface {
 	// Get 获取 raft log 中索引为 index 的 log entry term
@@ -23,7 +25,8 @@ type Log interface {
 //	each entry contains command for state machine,
 //	and term when entry was received by leader (first index is 1)
 type LogEntry struct {
-	Index   int
-	Term    int
-	Command Command
+	Index      int
+	Term       int
+	Command    Command
+	AppendTime time.Time
 }

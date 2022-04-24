@@ -2,7 +2,6 @@ package raft
 
 import (
 	"context"
-	logger "log"
 	"sync"
 )
 
@@ -112,9 +111,8 @@ func (c *candidate) elect() (<-chan struct{}, error) {
 			go func() {
 				defer wg.Done()
 
-				results, err := c.client.CallRequestVote(addr, args)
+				results, err := c.rpc.CallRequestVote(addr, args)
 				if err != nil {
-					logger.Printf("call requestVote, addr: %q, err: %+v", addr, err)
 					return
 				}
 				if results.VoteGranted {

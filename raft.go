@@ -3,7 +3,7 @@ package raft
 import (
 	"context"
 	"errors"
-	logger "log"
+	"fmt"
 	"math/rand"
 	"sync"
 	"time"
@@ -15,10 +15,6 @@ var (
 
 // New 实例化一个 raft 一致性模型
 func New(id RaftId, apply Apply, store Store, log Log, peers map[RaftId]RaftAddr, optFns ...OptFn) (Raft, error) {
-	if len(peers) == 0 {
-		panic("peers can't  be nill")
-	}
-
 	opts := defaultOpts()
 	for _, fn := range optFns {
 		fn(opts)
@@ -28,7 +24,7 @@ func New(id RaftId, apply Apply, store Store, log Log, peers map[RaftId]RaftAddr
 	if err != nil {
 		return nil, err
 	}
-	commitCond := sync.NewCond(&sync.Mutex{})
+
 	raft := &raft{
 		id: id,
 
@@ -37,16 +33,22 @@ func New(id RaftId, apply Apply, store Store, log Log, peers map[RaftId]RaftAddr
 
 		apply: apply,
 
-		register: opts.register,
-		client:   opts.client,
+		rpc: opts.rpc,
 
-		commitCond: commitCond,
+		commitCond: sync.NewCond(&sync.Mutex{}),
 		rpcArgs:    make(chan rpcArgs, 1),
 
 		peers:           peers,
 		electionTimeout: opts.election,
 
+		logger: opts.logger,
+
 		done: make(chan struct{}),
+	}
+	raft.initTicker()
+	err = raft.initServer()
+	if err != nil {
+		return nil, err
 	}
 
 	return raft, nil
@@ -93,10 +95,7 @@ type raft struct {
 
 	server
 
-	// 注册 rpc 服务
-	register func(RPCService) error
-	// rpc 服务客户端
-	client RPCClient
+	rpc RPC
 
 	// 通知 commitIndex 更新事件发生
 	commitCond *sync.Cond
@@ -114,49 +113,65 @@ type raft struct {
 	// ticker heartbeat/election timer
 	ticker *time.Ticker
 
+	logger Logger
+
 	// 表示一致性模型是否已停用
 	done chan struct{}
+}
+
+func (r *raft) initTicker() {
+	timeout := r.HeartbeatTimeout()
+	ticker := time.NewTicker(timeout)
+	r.ticker = ticker
+}
+
+func (r *raft) initServer() (err error) {
+	votedFor := r.GetVotedFor()
+	if !votedFor.isNil() && votedFor == r.Id() {
+		r.server, err = r.ToLeader()
+		return err
+	}
+	r.server = r.ToFollower(votedFor)
+	return nil
+}
+
+func (r *raft) runRPC() error {
+	service := r.newRPCService()
+	err := r.rpc.Register(service)
+	if err != nil {
+		return err
+	}
+
+	err = r.rpc.Listen()
+	if err != nil {
+		return err
+	}
+	return r.rpc.Serve()
 }
 
 func (r *raft) Id() RaftId {
 	return r.id
 }
 
+func (r *raft) Handle(ctx context.Context, cmd ...Command) error {
+	return r.server.Handle(ctx, cmd...)
+}
+
 func (r *raft) Run() (err error) {
 	rand.Seed(time.Now().UnixNano())
 
-	r.initTicker()
-
-	var server server
-	if votedFor := r.GetVotedFor(); r.Id() == votedFor {
-		server, err = r.ToLeader()
-		if err != nil {
-			return err
-		}
-	} else {
-		server = r.ToFollower(votedFor)
-	}
-
-	err = r.register(r.newRPCService())
-	if err != nil {
-		return err
-	}
+	go r.runRPC()
+	defer r.rpc.Close()
 
 	go r.loopApplyCommitted()
 
 	for {
-		server, err = server.Run()
+		server, err := r.server.Run()
 		if err != nil {
 			return err
 		}
 		r.server = server
 	}
-}
-
-func (r *raft) initTicker() {
-	timeout := r.HeartbeatTimout()
-	ticker := time.NewTicker(timeout)
-	r.ticker = ticker
 }
 
 func (r *raft) Stop() {
@@ -170,10 +185,6 @@ func (r *raft) Stop() {
 // Done 是否已经停止
 func (r *raft) Done() <-chan struct{} {
 	return r.done
-}
-
-func (r *raft) Handle(ctx context.Context, cmd ...Command) error {
-	return r.server.Handle(ctx, cmd...)
 }
 
 func (r *raft) loopApplyCommitted() {
@@ -197,7 +208,7 @@ func (r *raft) loopApplyCommitted() {
 
 			err := r.ApplyCommitted()
 			if err != nil {
-				logger.Printf("apply commands, err: %+v", err)
+				r.Debug("apply commands, err: %+v", err)
 			}
 		}()
 	}
@@ -295,6 +306,8 @@ func (r *raft) newRPCService() RPCService {
 }
 
 func (r *raft) ToFollower(votedFor RaftId, term ...int) server {
+	defer r.Debug("convert to follower, votedFor: %q", r.GetVotedFor())
+
 	if len(term) > 0 {
 		r.SetCurrentTerm(term[0])
 	}
@@ -315,6 +328,8 @@ func (r *raft) ToFollower(votedFor RaftId, term ...int) server {
 //
 // • Reset election timer
 func (r *raft) ToCandidate() server {
+	defer r.Debug("convert to candidate")
+
 	nextTerm := r.GetCurrentTerm() + 1
 	r.SetCurrentTerm(nextTerm)
 	id := r.Id()
@@ -328,6 +343,8 @@ func (r *raft) ToCandidate() server {
 
 // ToLeader
 func (r *raft) ToLeader() (server, error) {
+	defer r.Debug("convert to leader")
+
 	server := &leader{
 		raft: r,
 	}
@@ -347,8 +364,8 @@ func (r *raft) ToLeader() (server, error) {
 	return server, nil
 }
 
-// HeartbeatTimout 心跳超时
-func (r *raft) HeartbeatTimout() time.Duration {
+// HeartbeatTimeout 心跳超时
+func (r *raft) HeartbeatTimeout() time.Duration {
 	return r.electionTimeout[0] / 2
 }
 
@@ -358,4 +375,20 @@ func (r *raft) ElectionTimeout() time.Duration {
 	end := r.electionTimeout[1]
 	d := rand.Int63n(int64(end - start))
 	return start + time.Duration(d)
+}
+
+// Debug
+func (r *raft) Debug(format string, args ...interface{}) {
+	format = fmt.Sprintf("%s %s", r.who(), format)
+	r.logger.Debug(format, args...)
+}
+
+// who
+func (r *raft) who() string {
+	// raftId:term:state
+	var state string
+	if r.server != nil {
+		state = r.server.String()
+	}
+	return fmt.Sprintf("[%s:%d:%s]", r.Id(), r.GetCurrentTerm(), state)
 }

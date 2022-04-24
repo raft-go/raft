@@ -1,7 +1,18 @@
 package raft
 
-// RPCClient raft rpc client
-type RPCClient interface {
+import (
+	"net"
+	"net/http"
+	"net/rpc"
+)
+
+// RPC raft rpc client and register
+type RPC interface {
+	Listen() error
+	Serve() error
+	Register(RPCService) error
+	Close() error
+
 	CallAppendEntries(addr RaftAddr, args AppendEntriesArgs) (AppendEntriesResults, error)
 	CallRequestVote(addr RaftAddr, args RequestVoteArgs) (RequestVoteResults, error)
 }
@@ -245,4 +256,63 @@ func (s *rpcService) RequestVote(args RequestVoteArgs, results *RequestVoteResul
 	}
 
 	return nil
+}
+
+func newDefaultRpc(addr string) *defaultRPC {
+	rpc := &defaultRPC{
+		addr: addr,
+	}
+	return rpc
+}
+
+var _ RPC = (*defaultRPC)(nil)
+
+// defaultRPC
+type defaultRPC struct {
+	addr string
+
+	l net.Listener
+}
+
+func (r *defaultRPC) Listen() error {
+	var err error
+	r.l, err = net.Listen("tcp", r.addr)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+func (r *defaultRPC) Serve() error {
+	return http.Serve(r.l, nil)
+}
+
+func (r *defaultRPC) Register(service RPCService) error {
+	err := rpc.RegisterName("raft", service)
+	if err != nil {
+		return err
+	}
+	rpc.HandleHTTP()
+	return nil
+}
+
+func (r *defaultRPC) Close() error {
+	return r.l.Close()
+}
+
+func (*defaultRPC) CallAppendEntries(addr RaftAddr, args AppendEntriesArgs) (results AppendEntriesResults, err error) {
+	client, err := rpc.DialHTTP("tcp", string(addr))
+	if err != nil {
+		return results, err
+	}
+	err = client.Call("raft.AppendEntries", args, &results)
+	return results, err
+}
+
+func (*defaultRPC) CallRequestVote(addr RaftAddr, args RequestVoteArgs) (results RequestVoteResults, err error) {
+	client, err := rpc.DialHTTP("tcp", string(addr))
+	if err != nil {
+		return results, err
+	}
+	err = client.Call("raft.RequestVote", args, &results)
+	return results, err
 }

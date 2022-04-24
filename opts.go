@@ -5,34 +5,34 @@ import "time"
 // OptFn raft 配置可选项
 type OptFn func(*opts)
 
-// WithRPCRegister 提供 rpc register 可选项
-func WithRPCRegister(register func(RPCService) error) OptFn {
+// WithRPC 提供 rpc 可选项
+func WithRPC(rpc RPC) OptFn {
 	return func(o *opts) {
-		o.register = register
+		o.rpc = rpc
 	}
 }
 
-// WithRPCClient 提供 rpc client 可选项
-func WithRPCClient(client RPCClient) OptFn {
+// WithLogger
+func WithLogger(logger Logger) OptFn {
 	return func(o *opts) {
-		o.client = client
+		o.logger = logger
 	}
 }
 
 func defaultOpts() *opts {
 	return &opts{
-		register: nil, // TODO:
-		client:   nil, // TODO:
-		election: [2]time.Duration{150 * time.Microsecond, 300 * time.Microsecond},
+		rpc:      newDefaultRpc(":9797"),
+		election: [2]time.Duration{150 * time.Millisecond, 300 * time.Millisecond},
+		logger:   newLogger(),
 	}
 }
 
 // opts raft options
 type opts struct {
-	// register rpc service register
-	register func(RPCService) error
-	// client rpc client
-	client RPCClient
+	// rpc
+	rpc RPC
 	// election timeout duration
 	election [2]time.Duration
+
+	logger Logger
 }

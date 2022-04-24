@@ -2,7 +2,6 @@ package raft
 
 import (
 	"context"
-	logger "log"
 	"sort"
 	"sync"
 )
@@ -89,7 +88,7 @@ func (l *leader) Handle(ctx context.Context, cmd ...Command) error {
 }
 
 func (l *leader) sendHeartbeats() error {
-	timeout := l.HeartbeatTimout() / 2
+	timeout := l.HeartbeatTimeout() / 2
 	ctx := context.Background()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -115,7 +114,7 @@ func (l *leader) ResetTimer() {
 	// leader 状态只需要重置一次定时器
 	// 接受到其他节点的请求, 无需重置定时器
 	l.once.Do(func() {
-		timeout := l.HeartbeatTimout()
+		timeout := l.HeartbeatTimeout()
 		l.ticker.Reset(timeout)
 	})
 }
@@ -164,7 +163,6 @@ func (l *leader) replicate(ctx context.Context) error {
 					// 则不复制
 					lastLogIndex, lastLogTerm, err := l.Last()
 					if err != nil {
-						logger.Printf("get last entry, err : %+v", err)
 						continue
 					}
 					if lastLogTerm == l.GetCurrentTerm() {
@@ -175,7 +173,6 @@ func (l *leader) replicate(ctx context.Context) error {
 							start, end := nextIndex-1, lastLogIndex
 							entries, err = l.RangeGet(start, end)
 							if err != nil {
-								logger.Printf("RangeGet(%d, %d), err: %+v", start, end, err)
 								continue
 							}
 						}
@@ -190,9 +187,8 @@ func (l *leader) replicate(ctx context.Context) error {
 						LeaderCommit: l.GetCommitIndex(),
 					}
 
-					results, err := l.client.CallAppendEntries(addr, args)
+					results, err := l.rpc.CallAppendEntries(addr, args)
 					if err != nil {
-						logger.Printf("call append entries, addr: %q, err: %+v", addr, err)
 						return
 					}
 
