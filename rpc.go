@@ -40,50 +40,23 @@ type rpcArgs interface {
 
 var _ rpcArgs = AppendEntriesArgs{}
 
-// AppendEntries RPC
-//
-// Invoked by leader to replicate log entries (§5.3);
-//	also used as heartbeat (§5.2).
-//
-// Arguments:
-// 	term:
-//					leader’s term
-// 	leaderId:
-//			 		so follower can redirect clients
-// 	prevLogIndex:
-//					index of log entry immediately preceding new ones
-// 	prevLogTerm:
-//					term of prevLogIndex entry
-// 	entries[]:
-//					log entries to store (empty for heartbeat;
-// 					may send more than one for efficiency)
-// 	leaderCommit:
-//					leader’s commitIndex
-// Results:
-// 	term:
-//					currentTerm, for leader to update itself success true
-//					if follower contained entry matching
-// 	prevLogIndex:
-//					and prevLogTerm
-//
-// Receiver implementation:
-//
-// 	1. Reply false if term < currentTerm (§5.1)
-// 	2. Reply false if log doesn’t contain an entry at prevLogIndex
-// 		whose term matches prevLogTerm (§5.3)
-// 	3. If an existing entry conflicts with a new one (same index
-// 		but different terms), delete the existing entry and all that follow it (§5.3)
-// 	4. Append any new entries not already in the log
-// 	5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+// AppendEntriesArgs
 type AppendEntriesArgs struct {
-	Term     int
+	// leader’s term
+	Term int
+	// so follower can redirect clients
 	LeaderId RaftId
 
+	// index of log entry immediately preceding new ones
 	PrevLogIndex int
-	PrevLogTerm  int
+	// term of prevLogIndex entry
+	PrevLogTerm int
 
+	// log entries to store (empty for heartbeat;
+	// may send more than one for efficiency)
 	Entries []LogEntry
 
+	// leader’s commitIndex
 	LeaderCommit int
 }
 
@@ -100,39 +73,28 @@ func (a AppendEntriesArgs) getCallerId() RaftId {
 	return id
 }
 
+// AppendEntriesResults
 type AppendEntriesResults struct {
-	Term    int
+	// currentTerm
+	Term int
+	// for leader to update itself success true
+	// if follower contained entry matching
 	Success bool
 }
 
 var _ rpcArgs = RequestVoteArgs{}
 
-// RequestVote RPC
-//
-// Invoked by candidates to gather votes (§5.2).
-//
-// Arguments:
-// 	term candidate’s term
-// 	candidateId candidate requesting vote
-// 	lastLogIndex index of candidate’s last log entry (§5.4)
-// 	lastLogTerm term of candidate’s last log entry (§5.4)
-//
-// Results:
-// 	term:
-//				 	currentTerm, for candidate to update itself
-// 	voteGranted:
-//					true means candidate received vote
-//
-// Receiver implementation:
-// 	1. Reply false if term < currentTerm (§5.1)
-// 	2. If votedFor is null or candidateId, and candidate’s log is at
-// 		least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
+// RequestVoteArgs
 type RequestVoteArgs struct {
-	Term        int
+	// term candidate’s term
+	Term int
+	// candidateId candidate requesting vote
 	CandidateId RaftId
 
+	// lastLogIndex index of candidate’s last log entry (§5.4)
 	LastLogIndex int
-	LastLogTerm  int
+	// lastLogTerm term of candidate’s last log entry (§5.4)
+	LastLogTerm int
 }
 
 func (RequestVoteArgs) getType() rpcArgsType {
@@ -148,8 +110,11 @@ func (a RequestVoteArgs) getCallerId() RaftId {
 	return id
 }
 
+// RequestVoteResults
 type RequestVoteResults struct {
-	Term        int
+	// currentTerm, for candidate to update itself
+	Term int
+	// true means candidate received vote
 	VoteGranted bool
 }
 
@@ -161,6 +126,9 @@ type rpcService struct {
 }
 
 // AppendEntries 实现 AppendEntries RPC
+//
+// Invoked by leader to replicate log entries (§5.3);
+//	also used as heartbeat (§5.2).
 //
 // Implementation:
 //
@@ -210,10 +178,17 @@ func (s *rpcService) AppendEntries(args AppendEntriesArgs, results *AppendEntrie
 
 // RequestVote 实现 RequestVote RPC
 //
-// Receiver implementation:
+// Invoked by candidates to gather votes (§5.2).
+//
+// implementation:
+//
 // 	1. Reply false if term < currentTerm (§5.1)
-// 	2. If votedFor is null or candidateId, and candidate’s log is at
-// 		least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
+// 	2. Reply false if log doesn’t contain an entry at prevLogIndex
+// 		whose term matches prevLogTerm (§5.3)
+// 	3. If an existing entry conflicts with a new one (same index
+// 		but different terms), delete the existing entry and all that follow it (§5.3)
+// 	4. Append any new entries not already in the log
+// 	5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 func (s *rpcService) RequestVote(args RequestVoteArgs, results *RequestVoteResults) error {
 	s.sendRPCArgs(args)
 	s.server.ResetTimer()
