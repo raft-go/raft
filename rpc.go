@@ -4,11 +4,12 @@ import (
 	"net"
 	"net/http"
 	"net/rpc"
+	"sync"
 )
 
 // RPC raft rpc client and register
 type RPC interface {
-	Listen() error
+	Listen(addr string) error
 	Serve() error
 	Register(RPCService) error
 	Close() error
@@ -28,14 +29,30 @@ type rpcArgsType int8
 const (
 	_ rpcArgsType = iota
 	rpcArgsTypeAppendEntriesArgs
+	rpcArgsTypeAppendEntriesResults
 	rpcArgsTypeRequestVoteArgs
+	rpcArgsTypeRequestVoteResults
 )
+
+func (t rpcArgsType) String() string {
+	switch t {
+	case rpcArgsTypeAppendEntriesArgs:
+		return "AppendEntriesArgs"
+	case rpcArgsTypeAppendEntriesResults:
+		return "AppendEntriesResults"
+	case rpcArgsTypeRequestVoteArgs:
+		return "RequestVoteArgs"
+	case rpcArgsTypeRequestVoteResults:
+		return "RequestVoteResults"
+	default:
+		return "Unknown rpcArgsType"
+	}
+}
 
 // rpcArgs
 type rpcArgs interface {
 	getType() rpcArgsType
 	getTerm() int
-	getCallerId() RaftId
 }
 
 var _ rpcArgs = AppendEntriesArgs{}
@@ -68,10 +85,7 @@ func (a AppendEntriesArgs) getTerm() int {
 	return a.Term
 }
 
-func (a AppendEntriesArgs) getCallerId() RaftId {
-	id := a.LeaderId
-	return id
-}
+var _ rpcArgs = AppendEntriesResults{}
 
 // AppendEntriesResults
 type AppendEntriesResults struct {
@@ -80,6 +94,14 @@ type AppendEntriesResults struct {
 	// for leader to update itself success true
 	// if follower contained entry matching
 	Success bool
+}
+
+func (AppendEntriesResults) getType() rpcArgsType {
+	return rpcArgsTypeAppendEntriesResults
+}
+
+func (a AppendEntriesResults) getTerm() int {
+	return a.Term
 }
 
 var _ rpcArgs = RequestVoteArgs{}
@@ -105,10 +127,7 @@ func (a RequestVoteArgs) getTerm() int {
 	return a.Term
 }
 
-func (a RequestVoteArgs) getCallerId() RaftId {
-	id := a.CandidateId
-	return id
-}
+var _ rpcArgs = RequestVoteResults{}
 
 // RequestVoteResults
 type RequestVoteResults struct {
@@ -118,10 +137,19 @@ type RequestVoteResults struct {
 	VoteGranted bool
 }
 
+func (RequestVoteResults) getType() rpcArgsType {
+	return rpcArgsTypeRequestVoteResults
+}
+
+func (r RequestVoteResults) getTerm() int {
+	return r.Term
+}
+
 var _ RPCService = (*rpcService)(nil)
 
 // rpcService
 type rpcService struct {
+	mu sync.Mutex
 	*raft
 }
 
@@ -142,7 +170,9 @@ type rpcService struct {
 func (s *rpcService) AppendEntries(args AppendEntriesArgs, results *AppendEntriesResults) error {
 	s.raft.sendRPCArgs(args)
 	s.server.ResetTimer()
-	defer func() { results.Term = s.GetCurrentTerm() }()
+	defer func() {
+		results.Term = s.GetCurrentTerm()
+	}()
 
 	currentTerm := s.GetCurrentTerm()
 	// 1. Reply false if term < currentTerm (§5.1)
@@ -190,12 +220,21 @@ func (s *rpcService) AppendEntries(args AppendEntriesArgs, results *AppendEntrie
 // 	4. Append any new entries not already in the log
 // 	5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 func (s *rpcService) RequestVote(args RequestVoteArgs, results *RequestVoteResults) error {
+	// 加锁, 防止两个 term 相同
+	// 且比 currentTerm 大的节点同时获得投票
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.Debug("<- Vote request %s at %d", args.CandidateId, args.Term)
 	s.sendRPCArgs(args)
 	s.server.ResetTimer()
 	defer func() {
 		results.Term = s.GetCurrentTerm()
 		if results.VoteGranted {
+			s.Debug("Vote up -> %s at %d", args.CandidateId, args.Term)
 			s.SetVotedFor(args.CandidateId)
+		} else {
+			s.Debug("Vote down -> %s at %d", args.CandidateId, args.Term)
 		}
 	}()
 
@@ -206,37 +245,40 @@ func (s *rpcService) RequestVote(args RequestVoteArgs, results *RequestVoteResul
 	}
 	// 	2. If votedFor is null or candidateId, and candidate’s log is at
 	// 		least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
-	if votedFor := s.GetVotedFor(); votedFor.isNil() || args.CandidateId == votedFor {
-		// Raft determines which of two logs is more up-to-date
-		// by comparing the index and term of the last entries in the
-		// logs.
-		//
-		// If the logs have last entries with different terms, then
-		// the log with the later term is more up-to-date.
-		//
-		// If the logs end with the same term, then whichever log is longer is
-		// more up-to-date.
-		index, term, err := s.Last()
-		if err != nil {
-			return err
-		}
-		if term < args.LastLogTerm {
-			results.VoteGranted = true
+	votedFor := s.GetVotedFor()
+	if currentTerm == args.Term {
+		if !(votedFor.isNil() || args.CandidateId == votedFor) {
 			return nil
 		}
-		if term == args.LastLogTerm && index <= args.LastLogIndex {
-			results.VoteGranted = true
-			return nil
-		}
+	}
+
+	// Raft determines which of two logs is more up-to-date
+	// by comparing the index and term of the last entries in the
+	// logs.
+	//
+	// If the logs have last entries with different terms, then
+	// the log with the later term is more up-to-date.
+	//
+	// If the logs end with the same term, then whichever log is longer is
+	// more up-to-date.
+	index, term, err := s.Last()
+	if err != nil {
+		return err
+	}
+	if term < args.LastLogTerm {
+		results.VoteGranted = true
+		return nil
+	}
+	if term == args.LastLogTerm && index <= args.LastLogIndex {
+		results.VoteGranted = true
+		return nil
 	}
 
 	return nil
 }
 
-func newDefaultRpc(addr string) *defaultRPC {
-	rpc := &defaultRPC{
-		addr: addr,
-	}
+func newDefaultRpc() *defaultRPC {
+	rpc := &defaultRPC{}
 	return rpc
 }
 
@@ -244,19 +286,18 @@ var _ RPC = (*defaultRPC)(nil)
 
 // defaultRPC
 type defaultRPC struct {
-	addr string
-
 	l net.Listener
 }
 
-func (r *defaultRPC) Listen() error {
+func (r *defaultRPC) Listen(addr string) error {
 	var err error
-	r.l, err = net.Listen("tcp", r.addr)
+	r.l, err = net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
 	return nil
 }
+
 func (r *defaultRPC) Serve() error {
 	return http.Serve(r.l, nil)
 }
@@ -279,6 +320,7 @@ func (*defaultRPC) CallAppendEntries(addr RaftAddr, args AppendEntriesArgs) (res
 	if err != nil {
 		return results, err
 	}
+	defer client.Close()
 	err = client.Call("raft.AppendEntries", args, &results)
 	return results, err
 }
@@ -288,6 +330,34 @@ func (*defaultRPC) CallRequestVote(addr RaftAddr, args RequestVoteArgs) (results
 	if err != nil {
 		return results, err
 	}
+	defer client.Close()
 	err = client.Call("raft.RequestVote", args, &results)
+	return results, err
+}
+
+var _ RPC = (*rpcWrapper)(nil)
+
+func newRpcWrapper(raft *raft, rpc RPC) *rpcWrapper {
+	return &rpcWrapper{
+		raft: raft,
+		RPC:  rpc,
+	}
+}
+
+// rpcWrapper
+type rpcWrapper struct {
+	*raft
+	RPC
+}
+
+func (w *rpcWrapper) CallAppendEntries(addr RaftAddr, args AppendEntriesArgs) (results AppendEntriesResults, err error) {
+	results, err = w.RPC.CallAppendEntries(addr, args)
+	w.raft.sendRPCArgs(results)
+	return results, err
+}
+
+func (w *rpcWrapper) CallRequestVote(addr RaftAddr, args RequestVoteArgs) (results RequestVoteResults, err error) {
+	results, err = w.RPC.CallRequestVote(addr, args)
+	w.raft.sendRPCArgs(results)
 	return results, err
 }

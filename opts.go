@@ -12,6 +12,17 @@ func WithRPC(rpc RPC) OptFn {
 	}
 }
 
+// WithElection 提供选举超时范围
+func WithElection(min, max time.Duration) OptFn {
+	if min >= max {
+		panic("election timeout'min must be less than max")
+	}
+	return func(o *opts) {
+		o.election[0] = min
+		o.election[1] = max
+	}
+}
+
 // WithLogger
 func WithLogger(logger Logger) OptFn {
 	return func(o *opts) {
@@ -21,8 +32,8 @@ func WithLogger(logger Logger) OptFn {
 
 func defaultOpts() *opts {
 	return &opts{
-		rpc:      newDefaultRpc(":9797"),
-		election: [2]time.Duration{150 * time.Millisecond, 300 * time.Millisecond},
+		rpc:      newDefaultRpc(),
+		election: [2]time.Duration{300 * time.Millisecond, 500 * time.Millisecond},
 		logger:   newLogger(),
 	}
 }

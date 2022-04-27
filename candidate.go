@@ -10,6 +10,7 @@ var _ server = (*candidate)(nil)
 // candidate 实现一致性模型在 candidate 状态下的行为
 type candidate struct {
 	*raft
+	once sync.Once
 }
 
 func (c *candidate) Run() (server, error) {
@@ -18,29 +19,42 @@ func (c *candidate) Run() (server, error) {
 	if err != nil {
 		return nil, err
 	}
-	for range voteCh {
-		count++
-		// • If votes received from
-		//   majority of servers: become leader
-		if count > len(c.peers)/2 {
-			return c.ToLeader()
-		}
-	}
 
 	for {
-		select {
-		case <-c.Done():
-			return nil, ErrStopped
-		case <-c.ticker.C:
-			// If election timeout elapses:
-			//	start new election
-			return c.ToCandidate(), nil
-		case args := <-c.rpcArgs:
-			server, converted := c.reactToRPCArgs(args)
-			if converted {
-				return server, nil
+		for ok := true; ok; {
+			select {
+			case <-c.Done():
+				return nil, ErrStopped
+			case args := <-c.rpcArgs:
+				server, converted, err := c.reactToRPCArgs(args)
+				if err != nil {
+					return nil, err
+				}
+				if converted {
+					return server, nil
+				}
+			case <-c.ticker.C:
+				c.Debug("Election timeout")
+				// If election timeout elapses:
+				//	start new election
+				return c.ToCandidate(), nil
+			case _, ok = <-voteCh:
+				if !ok {
+					c.Debug("Failed to win the election")
+					continue
+				}
+
+				count++
+				// • If votes received from
+				//   majority of servers: become leader
+				if count > len(c.peers)/2 {
+					c.Debug("Achieved Majority vote(%d)", count)
+					return c.ToLeader()
+				}
 			}
 		}
+
+		voteCh = (<-chan struct{})(nil)
 	}
 }
 
@@ -49,8 +63,11 @@ func (c *candidate) Handle(context.Context, ...Command) error {
 }
 
 func (c *candidate) ResetTimer() {
-	timeout := c.ElectionTimeout()
-	c.ticker.Reset(timeout)
+	c.once.Do(func() {
+		c.Debug("Reset election timer")
+		timeout := c.ElectionTimeout()
+		c.ticker.Reset(timeout)
+	})
 }
 
 func (c *candidate) String() string {
@@ -68,12 +85,16 @@ func (c *candidate) String() string {
 // 	recognizes the leader as legitimate and returns to follower
 // 	state. If the term in the RPC is smaller than the candidate’s
 // 	current term, then the candidate rejects the RPC and continues in candidate state.
-func (c *candidate) reactToRPCArgs(args rpcArgs) (server server, converted bool) {
+func (c *candidate) reactToRPCArgs(args rpcArgs) (server server, converted bool, err error) {
 	if args.getType() == rpcArgsTypeAppendEntriesArgs {
 		if args.getTerm() >= c.GetCurrentTerm() {
-			return c.ToFollower(args.getCallerId()), true
+			server, err = c.ToFollower(args.getTerm())
+			if err != nil {
+				return nil, false, err
+			}
+			return server, true, nil
 		} else {
-			return nil, false
+			return nil, false, nil
 		}
 	}
 	return c.raft.reactToRPCArgs(args)
@@ -111,12 +132,17 @@ func (c *candidate) elect() (<-chan struct{}, error) {
 			go func() {
 				defer wg.Done()
 
+				c.Debug("Request a vote -> %s", id)
 				results, err := c.rpc.CallRequestVote(addr, args)
 				if err != nil {
+					c.Debug("Call %s's RequestVote, err: %+v", id, err)
 					return
 				}
 				if results.VoteGranted {
+					c.Debug("<- Vote up %s", id)
 					voteCh <- struct{}{}
+				} else {
+					c.Debug("<- Vote down %s", id)
 				}
 			}()
 		}

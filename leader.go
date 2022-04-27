@@ -36,6 +36,14 @@ func (l *leader) Run() (server, error) {
 		select {
 		case <-l.Done():
 			return nil, ErrStopped
+		case args := <-l.rpcArgs:
+			server, converted, err := l.reactToRPCArgs(args)
+			if err != nil {
+				return nil, err
+			}
+			if converted {
+				return server, nil
+			}
 		case <-l.ticker.C:
 			// repeat during idle periods to
 			// prevent election timeouts (§5.2)
@@ -72,7 +80,7 @@ func (l *leader) Handle(ctx context.Context, cmd ...Command) error {
 		return err
 	}
 
-	err = l.replicate(ctx)
+	err = l.replicate(ctx.Done())
 	if err != nil {
 		return err
 	}
@@ -88,12 +96,13 @@ func (l *leader) Handle(ctx context.Context, cmd ...Command) error {
 }
 
 func (l *leader) sendHeartbeats() error {
+	l.Debug("Broadcast, reseting followers' HTB")
 	timeout := l.HeartbeatTimeout() / 2
 	ctx := context.Background()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	err := l.replicate(ctx)
+	err := l.replicate(ctx.Done())
 	if err != nil {
 		return err
 	}
@@ -125,7 +134,7 @@ func (*leader) String() string {
 
 // replicate
 // replicate log entries
-func (l *leader) replicate(ctx context.Context) error {
+func (l *leader) replicate(done <-chan struct{}) error {
 	replicateCh := make(chan struct{}, len(l.peers))
 
 	go func() {
@@ -144,7 +153,7 @@ func (l *leader) replicate(ctx context.Context) error {
 
 				for {
 					select {
-					case <-ctx.Done():
+					case <-done:
 						return
 					default:
 						// no-op
@@ -189,6 +198,7 @@ func (l *leader) replicate(ctx context.Context) error {
 
 					results, err := l.rpc.CallAppendEntries(addr, args)
 					if err != nil {
+						l.Debug("Call %s's AppendEntries, err: %+v", id, err)
 						return
 					}
 
@@ -215,8 +225,8 @@ func (l *leader) replicate(ctx context.Context) error {
 	var count int
 	for {
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
+		case <-done:
+			return nil
 		case <-replicateCh:
 			count++
 			if count > len(l.peers)/2 {

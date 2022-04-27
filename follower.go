@@ -14,16 +14,20 @@ func (f *follower) Run() (server, error) {
 		select {
 		case <-f.Done():
 			return nil, ErrStopped
+		case args := <-f.rpcArgs:
+			server, converted, err := f.reactToRPCArgs(args)
+			if err != nil {
+				return nil, err
+			}
+			if converted {
+				return server, nil
+			}
 		case <-f.ticker.C:
+			f.Debug("Election timeout")
 			// If election timeout elapses without receiving AppendEntries
 			// 	 RPC from current leader or granting vote to candidate:
 			// 		convert to candidate
 			return f.ToCandidate(), nil
-		case args := <-f.rpcArgs:
-			server, converted := f.reactToRPCArgs(args)
-			if converted {
-				return server, nil
-			}
 		}
 	}
 }

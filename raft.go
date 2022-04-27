@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"os"
 	"sync"
 	"time"
 )
@@ -33,10 +34,11 @@ func New(id RaftId, apply Apply, store Store, log Log, peers map[RaftId]RaftAddr
 
 		apply: apply,
 
-		rpc: opts.rpc,
+		rpc:  opts.rpc,
+		addr: peers[id],
 
 		commitCond: sync.NewCond(&sync.Mutex{}),
-		rpcArgs:    make(chan rpcArgs, 1),
+		rpcArgs:    make(chan rpcArgs),
 
 		peers:           peers,
 		electionTimeout: opts.election,
@@ -45,8 +47,7 @@ func New(id RaftId, apply Apply, store Store, log Log, peers map[RaftId]RaftAddr
 
 		done: make(chan struct{}),
 	}
-	raft.initTicker()
-	err = raft.initServer()
+	err = raft.init()
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +96,8 @@ type raft struct {
 
 	server
 
-	rpc RPC
+	rpc  RPC
+	addr RaftAddr
 
 	// 通知 commitIndex 更新事件发生
 	commitCond *sync.Cond
@@ -119,20 +121,16 @@ type raft struct {
 	done chan struct{}
 }
 
-func (r *raft) initTicker() {
-	timeout := r.HeartbeatTimeout()
+func (r *raft) init() (err error) {
+	rpc := newRpcWrapper(r, r.rpc)
+	r.rpc = rpc
+
+	timeout := r.ElectionTimeout()
 	ticker := time.NewTicker(timeout)
 	r.ticker = ticker
-}
 
-func (r *raft) initServer() (err error) {
-	votedFor := r.GetVotedFor()
-	if !votedFor.isNil() && votedFor == r.Id() {
-		r.server, err = r.ToLeader()
-		return err
-	}
-	r.server = r.ToFollower(votedFor)
-	return nil
+	r.server, err = r.ToFollower(r.GetCurrentTerm())
+	return err
 }
 
 func (r *raft) runRPC() error {
@@ -142,7 +140,7 @@ func (r *raft) runRPC() error {
 		return err
 	}
 
-	err = r.rpc.Listen()
+	err = r.rpc.Listen(string(r.addr))
 	if err != nil {
 		return err
 	}
@@ -158,12 +156,25 @@ func (r *raft) Handle(ctx context.Context, cmd ...Command) error {
 }
 
 func (r *raft) Run() (err error) {
+	r.Debug("Run raft consensuse module")
 	rand.Seed(time.Now().UnixNano())
 
-	go r.runRPC()
+	go func() {
+		err := r.runRPC()
+		if err != nil {
+			r.Debug("run rpc, err: %+v", err)
+			os.Exit(1)
+		}
+	}()
 	defer r.rpc.Close()
 
 	go r.loopApplyCommitted()
+
+	// drop ticks to avoid election timeout
+	for len(r.ticker.C) != 0 {
+		<-r.ticker.C
+	}
+	r.ResetTimer()
 
 	for {
 		server, err := r.server.Run()
@@ -273,22 +284,10 @@ func (r *raft) ApplyCommitted() error {
 	return nil
 }
 
-// reactToRPCArgs
-//
-// 实现以下功能:
-// 		If RPC request or response contains term T > currentTerm:
-// 		set currentTerm = T, convert to follower (§5.1)
-func (r *raft) reactToRPCArgs(args rpcArgs) (server server, converted bool) {
-	if args.getTerm() > r.GetCurrentTerm() {
-		return r.ToFollower(args.getCallerId(), args.getTerm()), true
-	}
-	return nil, false
-}
-
 // sendRPCArgs
 // 发送待反应的 rpc Args
 func (r *raft) sendRPCArgs(args rpcArgs) {
-	if args.getTerm() <= r.GetCurrentTerm() {
+	if args.getTerm() < r.GetCurrentTerm() {
 		return
 	}
 	select {
@@ -299,23 +298,45 @@ func (r *raft) sendRPCArgs(args rpcArgs) {
 	}
 }
 
+// reactToRPCArgs
+//
+// 实现以下功能:
+// 		If RPC request or response contains term T > currentTerm:
+// 		set currentTerm = T, convert to follower (§5.1)
+func (r *raft) reactToRPCArgs(args rpcArgs) (server server, converted bool, err error) {
+	if args.getTerm() > r.GetCurrentTerm() {
+		r.Debug("React to args(term: %d, type: %q)",
+			args.getTerm(), args.getType())
+		server, err = r.ToFollower(args.getTerm())
+		if err != nil {
+			return nil, false, err
+		}
+		return server, true, nil
+	}
+	return nil, false, nil
+}
+
 func (r *raft) newRPCService() RPCService {
 	return &rpcService{
 		raft: r,
 	}
 }
 
-func (r *raft) ToFollower(votedFor RaftId, term ...int) server {
-	defer r.Debug("convert to follower, votedFor: %q", r.GetVotedFor())
-
-	if len(term) > 0 {
-		r.SetCurrentTerm(term[0])
+func (r *raft) ToFollower(term int, votedFor ...RaftId) (server, error) {
+	r.SetCurrentTerm(term)
+	if len(votedFor) > 0 {
+		err := r.SetVotedFor(votedFor[0])
+		if err != nil {
+			return nil, err
+		}
 	}
 	server := &follower{
 		raft: r,
 	}
 	server.ResetTimer()
-	return server
+	defer r.Debug("Convert to follower")
+
+	return server, nil
 }
 
 // ToCandidate
@@ -328,7 +349,7 @@ func (r *raft) ToFollower(votedFor RaftId, term ...int) server {
 //
 // • Reset election timer
 func (r *raft) ToCandidate() server {
-	defer r.Debug("convert to candidate")
+	defer r.Debug("Convert to candidate")
 
 	nextTerm := r.GetCurrentTerm() + 1
 	r.SetCurrentTerm(nextTerm)
@@ -343,7 +364,7 @@ func (r *raft) ToCandidate() server {
 
 // ToLeader
 func (r *raft) ToLeader() (server, error) {
-	defer r.Debug("convert to leader")
+	defer r.Debug("Convert to leader")
 
 	server := &leader{
 		raft: r,
@@ -390,5 +411,9 @@ func (r *raft) who() string {
 	if r.server != nil {
 		state = r.server.String()
 	}
+	for i := 9 - len(state); i > 0; i-- {
+		state += " "
+	}
+
 	return fmt.Sprintf("[%s:%d:%s]", r.Id(), r.GetCurrentTerm(), state)
 }
