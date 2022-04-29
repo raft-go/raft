@@ -30,7 +30,7 @@ func WithLogger(logger Logger) OptFn {
 	}
 }
 
-func defaultOpts() *opts {
+func newOpts() *opts {
 	return &opts{
 		rpc:      newDefaultRpc(),
 		election: [2]time.Duration{300 * time.Millisecond, 500 * time.Millisecond},

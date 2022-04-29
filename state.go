@@ -137,7 +137,7 @@ func (s *state_) GetCommitIndex() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.currentTerm
+	return s.commitIndex
 }
 
 func (s *state_) SetCommitIndex(i int) {

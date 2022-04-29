@@ -7,16 +7,18 @@ import (
 	"math/rand"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 var (
-	ErrStopped = errors.New("err: raft consensus module has been stopped")
+	ErrStopped       = errors.New("err: raft consensus module has been stopped")
+	ErrRanRepeatedly = errors.New("err: raft consensus module can not bee ran repeatedly")
 )
 
 // New 实例化一个 raft 一致性模型
 func New(id RaftId, apply Apply, store Store, log Log, peers map[RaftId]RaftAddr, optFns ...OptFn) (Raft, error) {
-	opts := defaultOpts()
+	opts := newOpts()
 	for _, fn := range optFns {
 		fn(opts)
 	}
@@ -33,6 +35,8 @@ func New(id RaftId, apply Apply, store Store, log Log, peers map[RaftId]RaftAddr
 		Log:   log,
 
 		apply: apply,
+
+		serverAccessor: newServerAccessor(&sync.Mutex{}),
 
 		rpc:  opts.rpc,
 		addr: peers[id],
@@ -71,6 +75,8 @@ type Raft interface {
 	//
 	// append log entry --> log replication --> apply to state matchine
 	Handle(ctx context.Context, cmd ...Command) error
+	// IsLeader 是否是 Leader
+	IsLeader() bool
 }
 
 // RaftId raft 一致性模型 id
@@ -94,7 +100,7 @@ type raft struct {
 
 	apply Apply
 
-	server
+	serverAccessor
 
 	rpc  RPC
 	addr RaftAddr
@@ -117,6 +123,9 @@ type raft struct {
 
 	logger Logger
 
+	// whether or not already ran
+	ran int32
+
 	// 表示一致性模型是否已停用
 	done chan struct{}
 }
@@ -129,7 +138,8 @@ func (r *raft) init() (err error) {
 	ticker := time.NewTicker(timeout)
 	r.ticker = ticker
 
-	r.server, err = r.ToFollower(r.GetCurrentTerm())
+	server, err := r.ToFollower(r.GetCurrentTerm())
+	r.SetServer(server)
 	return err
 }
 
@@ -152,10 +162,18 @@ func (r *raft) Id() RaftId {
 }
 
 func (r *raft) Handle(ctx context.Context, cmd ...Command) error {
-	return r.server.Handle(ctx, cmd...)
+	return r.GetServer().Handle(ctx, cmd...)
+}
+
+func (r *raft) IsLeader() bool {
+	return r.GetServer().IsLeader()
 }
 
 func (r *raft) Run() (err error) {
+	if atomic.SwapInt32(&r.ran, 1) != 0 {
+		return ErrRanRepeatedly
+	}
+
 	r.Debug("Run raft consensuse module")
 	rand.Seed(time.Now().UnixNano())
 
@@ -174,14 +192,14 @@ func (r *raft) Run() (err error) {
 	for len(r.ticker.C) != 0 {
 		<-r.ticker.C
 	}
-	r.ResetTimer()
+	r.GetServer().ResetTimer()
 
 	for {
-		server, err := r.server.Run()
+		server, err := r.GetServer().Run()
 		if err != nil {
 			return err
 		}
-		r.server = server
+		r.SetServer(server)
 	}
 }
 
@@ -212,7 +230,7 @@ func (r *raft) loopApplyCommitted() {
 			defer r.commitCond.L.Unlock()
 
 			var lastApplied, commitIndex int
-			for lastApplied <= commitIndex {
+			for commitIndex <= lastApplied {
 				r.commitCond.Wait()
 				commitIndex, lastApplied = r.GetCommitIndex(), r.GetLastApplied()
 			}
@@ -241,6 +259,7 @@ func (r *raft) syncLeaderCommit(leaderCommit int) error {
 		commitIndex = lastIndex
 	}
 	r.state.SetCommitIndex(commitIndex)
+	r.Debug("Sync commitIndex to %d", commitIndex)
 
 	// 通知 commitIndex 更新事件发生
 	r.commitCond.Signal()
@@ -257,16 +276,17 @@ type Apply func(commands Commands) (appliedCount int, err error)
 // 		If commitIndex > lastApplied: increment lastApplied, apply
 // 		log[lastApplied] to state machine(§5.3)
 func (r *raft) ApplyCommitted() error {
-	var commitIndex, lastApplied int
+	commitIndex, lastApplied := r.GetCommitIndex(), r.GetLastApplied()
 	if commitIndex <= lastApplied {
-		commitIndex, lastApplied = r.GetCommitIndex(), r.GetLastApplied()
+		return nil
 	}
+
 	// 获取已 commit 且没 apply 的命令
 	entries, err := r.RangeGet(lastApplied, commitIndex)
 	if err != nil {
 		return err
 	}
-	var data []Command
+	var data = make([]Command, 0, len(entries))
 	for i := range entries {
 		data = append(data, entries[i].Command)
 	}
@@ -377,6 +397,9 @@ func (r *raft) ToLeader() (server, error) {
 		return nil, err
 	}
 	for raftId := range server.peers {
+		if raftId == r.Id() {
+			continue
+		}
 		server.nextIndex.Store(raftId, lastLogIndex+1)
 		server.matchIndex.Store(raftId, 0)
 	}
@@ -408,12 +431,12 @@ func (r *raft) Debug(format string, args ...interface{}) {
 func (r *raft) who() string {
 	// raftId:term:state
 	var state string
-	if r.server != nil {
-		state = r.server.String()
+	if r.GetServer() != nil {
+		state = r.GetServer().String()
 	}
 	for i := 9 - len(state); i > 0; i-- {
 		state += " "
 	}
 
-	return fmt.Sprintf("[%s:%d:%s]", r.Id(), r.GetCurrentTerm(), state)
+	return fmt.Sprintf("[%s:%d:%d:%d:%s]", r.Id(), r.GetCurrentTerm(), r.GetCommitIndex(), r.GetLastApplied(), state)
 }

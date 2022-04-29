@@ -132,7 +132,7 @@ func (c *candidate) elect() (<-chan struct{}, error) {
 			go func() {
 				defer wg.Done()
 
-				c.Debug("Request a vote -> %s", id)
+				c.Debug("-> Request a vote %s", id)
 				results, err := c.rpc.CallRequestVote(addr, args)
 				if err != nil {
 					c.Debug("Call %s's RequestVote, err: %+v", id, err)
@@ -150,4 +150,8 @@ func (c *candidate) elect() (<-chan struct{}, error) {
 	}()
 
 	return voteCh, nil
+}
+
+func (*candidate) IsLeader() bool {
+	return false
 }

@@ -169,7 +169,7 @@ type rpcService struct {
 // 	5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 func (s *rpcService) AppendEntries(args AppendEntriesArgs, results *AppendEntriesResults) error {
 	s.raft.sendRPCArgs(args)
-	s.server.ResetTimer()
+	s.GetServer().ResetTimer()
 	defer func() {
 		results.Term = s.GetCurrentTerm()
 	}()
@@ -188,6 +188,7 @@ func (s *rpcService) AppendEntries(args AppendEntriesArgs, results *AppendEntrie
 	if !match {
 		return nil
 	}
+	results.Success = true
 	// 	3. If an existing entry conflicts with a new one (same index
 	// 		but different terms), delete the existing entry and all that follow it (§5.3)
 	// 	4. Append any new entries not already in the log
@@ -227,14 +228,14 @@ func (s *rpcService) RequestVote(args RequestVoteArgs, results *RequestVoteResul
 
 	s.Debug("<- Vote request %s at %d", args.CandidateId, args.Term)
 	s.sendRPCArgs(args)
-	s.server.ResetTimer()
+	s.GetServer().ResetTimer()
 	defer func() {
 		results.Term = s.GetCurrentTerm()
 		if results.VoteGranted {
-			s.Debug("Vote up -> %s at %d", args.CandidateId, args.Term)
+			s.Debug("-> Vote up %s at %d", args.CandidateId, args.Term)
 			s.SetVotedFor(args.CandidateId)
 		} else {
-			s.Debug("Vote down -> %s at %d", args.CandidateId, args.Term)
+			s.Debug("-> Vote down %s at %d", args.CandidateId, args.Term)
 		}
 	}()
 
@@ -278,7 +279,9 @@ func (s *rpcService) RequestVote(args RequestVoteArgs, results *RequestVoteResul
 }
 
 func newDefaultRpc() *defaultRPC {
-	rpc := &defaultRPC{}
+	rpc := &defaultRPC{
+		server: rpc.NewServer(),
+	}
 	return rpc
 }
 
@@ -286,7 +289,10 @@ var _ RPC = (*defaultRPC)(nil)
 
 // defaultRPC
 type defaultRPC struct {
-	l net.Listener
+	id RaftId
+
+	l      net.Listener
+	server *rpc.Server
 }
 
 func (r *defaultRPC) Listen(addr string) error {
@@ -299,23 +305,18 @@ func (r *defaultRPC) Listen(addr string) error {
 }
 
 func (r *defaultRPC) Serve() error {
-	return http.Serve(r.l, nil)
+	return http.Serve(r.l, r.server)
 }
 
 func (r *defaultRPC) Register(service RPCService) error {
-	err := rpc.RegisterName("raft", service)
-	if err != nil {
-		return err
-	}
-	rpc.HandleHTTP()
-	return nil
+	return r.server.RegisterName("raft", service)
 }
 
 func (r *defaultRPC) Close() error {
 	return r.l.Close()
 }
 
-func (*defaultRPC) CallAppendEntries(addr RaftAddr, args AppendEntriesArgs) (results AppendEntriesResults, err error) {
+func (r *defaultRPC) CallAppendEntries(addr RaftAddr, args AppendEntriesArgs) (results AppendEntriesResults, err error) {
 	client, err := rpc.DialHTTP("tcp", string(addr))
 	if err != nil {
 		return results, err
@@ -325,7 +326,7 @@ func (*defaultRPC) CallAppendEntries(addr RaftAddr, args AppendEntriesArgs) (res
 	return results, err
 }
 
-func (*defaultRPC) CallRequestVote(addr RaftAddr, args RequestVoteArgs) (results RequestVoteResults, err error) {
+func (r *defaultRPC) CallRequestVote(addr RaftAddr, args RequestVoteArgs) (results RequestVoteResults, err error) {
 	client, err := rpc.DialHTTP("tcp", string(addr))
 	if err != nil {
 		return results, err

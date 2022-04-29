@@ -44,3 +44,7 @@ func (f *follower) ResetTimer() {
 func (*follower) String() string {
 	return "Follower"
 }
+
+func (*follower) IsLeader() bool {
+	return false
+}

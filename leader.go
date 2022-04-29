@@ -2,6 +2,7 @@ package raft
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"sync"
 )
@@ -67,7 +68,7 @@ func (l *leader) Handle(ctx context.Context, cmd ...Command) error {
 
 	// If command received from client: append entry to local log,
 	// respond after entry applied to state machine (§5.3)
-	entries := make([]LogEntry, len(cmd))
+	entries := make([]LogEntry, 0, len(cmd))
 	currentTerm := l.GetCurrentTerm()
 	for i := range cmd {
 		entries = append(entries, LogEntry{
@@ -80,7 +81,7 @@ func (l *leader) Handle(ctx context.Context, cmd ...Command) error {
 		return err
 	}
 
-	err = l.replicate(ctx.Done())
+	err = l.replicate(ctx)
 	if err != nil {
 		return err
 	}
@@ -96,15 +97,14 @@ func (l *leader) Handle(ctx context.Context, cmd ...Command) error {
 }
 
 func (l *leader) sendHeartbeats() error {
-	l.Debug("Broadcast, reseting followers' HTB")
 	timeout := l.HeartbeatTimeout() / 2
 	ctx := context.Background()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	err := l.replicate(ctx.Done())
-	if err != nil {
-		return err
+	err := l.replicate(ctx)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return nil
 	}
 	ok, err := l.refreshCommitIndex()
 	if err != nil {
@@ -134,7 +134,7 @@ func (*leader) String() string {
 
 // replicate
 // replicate log entries
-func (l *leader) replicate(done <-chan struct{}) error {
+func (l *leader) replicate(ctx context.Context) error {
 	replicateCh := make(chan struct{}, len(l.peers))
 
 	go func() {
@@ -153,7 +153,7 @@ func (l *leader) replicate(done <-chan struct{}) error {
 
 				for {
 					select {
-					case <-done:
+					case <-ctx.Done():
 						return
 					default:
 						// no-op
@@ -209,12 +209,15 @@ func (l *leader) replicate(done <-chan struct{}) error {
 							nextIndex := args.Entries[len(args.Entries)-1].Index + 1
 							l.nextIndex.Store(id, nextIndex)
 						}
-						l.matchIndex.Store(id, prevLogIndex)
+						l.matchIndex.Store(id, prevLogIndex+len(args.Entries))
 						replicateCh <- struct{}{}
 						return
 					}
 					// If AppendEntries fails because of log inconsistency:
 					// decrement nextIndex and retry (§5.3)
+					if nextIndex == 0 {
+						return
+					}
 					l.nextIndex.Store(id, nextIndex-1)
 				}
 			}(id, addr)
@@ -225,8 +228,8 @@ func (l *leader) replicate(done <-chan struct{}) error {
 	var count int
 	for {
 		select {
-		case <-done:
-			return nil
+		case <-ctx.Done():
+			return ctx.Err()
 		case <-replicateCh:
 			count++
 			if count > len(l.peers)/2 {
@@ -263,14 +266,12 @@ func (l *leader) refreshCommitIndex() (bool, error) {
 	// If there exists an N such that N > commitIndex, a majority
 	// of matchIndex[i] ≥ N, and log[N].term == currentTerm:
 	// set commitIndex = N (§5.3, §5.4).
-	matchIndex := make([]int, 0)
+	var matchIndex []int
 	l.matchIndex.Range(func(_ RaftId, index int) bool {
 		matchIndex = append(matchIndex, index)
 		return true
 	})
 	commitIndex := l.GetCommitIndex()
-	matchIndex = append(matchIndex, commitIndex)
-
 	sort.Ints(matchIndex)
 	mid := len(matchIndex) / 2
 	nextCommitIndex := matchIndex[mid]
@@ -288,6 +289,14 @@ func (l *leader) refreshCommitIndex() (bool, error) {
 	l.SetCommitIndex(nextCommitIndex)
 	return true, nil
 }
+
+func (*leader) IsLeader() bool {
+	return true
+}
+
+type nextIndexMap raftIdIndexMap
+
+type matchIndexMap raftIdIndexMap
 
 type raftIdIndexMap struct {
 	m sync.Map

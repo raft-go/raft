@@ -26,7 +26,7 @@ type logger struct {
 
 // Debug
 func (l *logger) Debug(format string, args ...interface{}) {
-	now := time.Now().Format("20060102T15:04:05.000")
+	now := time.Now().Format("20060102T15:04:05.0000000")
 	format = fmt.Sprintf("%s %s", now, format)
 	l.Logger.Printf(format, args...)
 }
