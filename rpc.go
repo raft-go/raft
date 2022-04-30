@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"errors"
 	"net"
 	"net/http"
 	"net/rpc"
@@ -293,6 +294,8 @@ type defaultRPC struct {
 
 	l      net.Listener
 	server *rpc.Server
+
+	clients rpcClients
 }
 
 func (r *defaultRPC) Listen(addr string) error {
@@ -313,27 +316,95 @@ func (r *defaultRPC) Register(service RPCService) error {
 }
 
 func (r *defaultRPC) Close() error {
-	return r.l.Close()
+	closes := []func() error{
+		r.l.Close,
+		r.clients.Close,
+	}
+	for _, close := range closes {
+		_ = close()
+	}
+	return nil
 }
 
 func (r *defaultRPC) CallAppendEntries(addr RaftAddr, args AppendEntriesArgs) (results AppendEntriesResults, err error) {
-	client, err := rpc.DialHTTP("tcp", string(addr))
+	client, err := r.clients.Get(addr)
 	if err != nil {
 		return results, err
 	}
-	defer client.Close()
+
 	err = client.Call("raft.AppendEntries", args, &results)
+	if errors.Is(err, net.ErrClosed) {
+		r.clients.Delete(addr)
+	}
 	return results, err
 }
 
 func (r *defaultRPC) CallRequestVote(addr RaftAddr, args RequestVoteArgs) (results RequestVoteResults, err error) {
-	client, err := rpc.DialHTTP("tcp", string(addr))
+	client, err := r.clients.Get(addr)
 	if err != nil {
 		return results, err
 	}
-	defer client.Close()
+
 	err = client.Call("raft.RequestVote", args, &results)
+	if errors.Is(err, net.ErrClosed) {
+		r.clients.Delete(addr)
+	}
 	return results, err
+}
+
+// rpcClients reuse rpc.Client
+type rpcClients struct {
+	mux     sync.RWMutex
+	clients map[RaftAddr]*rpc.Client
+	closed  bool
+}
+
+func (c *rpcClients) Get(addr RaftAddr) (*rpc.Client, error) {
+	c.mux.RLock()
+	if c.clients != nil {
+		client, ok := c.clients[addr]
+		if ok {
+			c.mux.RUnlock()
+			return client, nil
+		}
+	}
+	c.mux.RUnlock()
+
+	c.mux.Lock()
+	defer c.mux.Unlock()
+	if c.clients == nil {
+		c.clients = make(map[RaftAddr]*rpc.Client)
+	}
+	client, err := rpc.DialHTTP("tcp", string(addr))
+	if err != nil {
+		return nil, err
+	}
+	c.clients[addr] = client
+	return client, nil
+}
+
+func (c *rpcClients) Delete(addr RaftAddr) {
+	c.mux.Lock()
+	defer c.mux.Unlock()
+	if c.clients == nil {
+		c.clients = make(map[RaftAddr]*rpc.Client)
+	}
+	delete(c.clients, addr)
+}
+
+func (c *rpcClients) Close() error {
+	c.mux.Lock()
+	defer c.mux.Unlock()
+	if c.closed {
+		return nil
+	}
+
+	for _, client := range c.clients {
+		_ = client.Close()
+	}
+	c.clients = nil
+	defer func() { c.closed = true }()
+	return nil
 }
 
 var _ RPC = (*rpcWrapper)(nil)
