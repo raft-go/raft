@@ -209,7 +209,7 @@ func (l *leader) replicate(ctx context.Context) error {
 							nextIndex := args.Entries[len(args.Entries)-1].Index + 1
 							l.nextIndex.Store(id, nextIndex)
 						}
-						l.matchIndex.Store(id, prevLogIndex+len(args.Entries))
+						l.matchIndex.Store(id, prevLogIndex+uint64(len(args.Entries)))
 						replicateCh <- struct{}{}
 						return
 					}
@@ -266,13 +266,13 @@ func (l *leader) refreshCommitIndex() (bool, error) {
 	// If there exists an N such that N > commitIndex, a majority
 	// of matchIndex[i] ≥ N, and log[N].term == currentTerm:
 	// set commitIndex = N (§5.3, §5.4).
-	var matchIndex []int
-	l.matchIndex.Range(func(_ RaftId, index int) bool {
+	var matchIndex []uint64
+	l.matchIndex.Range(func(_ RaftId, index uint64) bool {
 		matchIndex = append(matchIndex, index)
 		return true
 	})
 	commitIndex := l.GetCommitIndex()
-	sort.Ints(matchIndex)
+	sort.Sort(Uint64Slice(matchIndex))
 	mid := len(matchIndex) / 2
 	nextCommitIndex := matchIndex[mid]
 
@@ -299,25 +299,49 @@ type nextIndexMap raftIdIndexMap
 type matchIndexMap raftIdIndexMap
 
 type raftIdIndexMap struct {
-	m sync.Map
+	mux sync.Mutex
+	m   map[RaftId]uint64
 }
 
-func (m *raftIdIndexMap) Load(id RaftId) (index int, ok bool) {
-	value, ok := m.m.Load(id)
-	if !ok {
-		return 0, false
+func (m *raftIdIndexMap) Load(id RaftId) (index uint64, ok bool) {
+	m.mux.Lock()
+	defer m.mux.Unlock()
+	if m.m == nil {
+		m.m = map[RaftId]uint64{}
 	}
-	return value.(int), true
+
+	index, ok = m.m[id]
+	return index, ok
 }
 
-func (m *raftIdIndexMap) Store(id RaftId, index int) {
-	m.m.Store(id, index)
+func (m *raftIdIndexMap) Store(id RaftId, index uint64) {
+	m.mux.Lock()
+	defer m.mux.Unlock()
+	if m.m == nil {
+		m.m = map[RaftId]uint64{}
+	}
+
+	m.m[id] = index
 }
 
-func (m *raftIdIndexMap) Range(fn func(id RaftId, index int) bool) {
-	m.m.Range(func(key, value any) bool {
-		id := key.(RaftId)
-		index := value.(int)
-		return fn(id, index)
-	})
+func (m *raftIdIndexMap) Range(fn func(id RaftId, index uint64) bool) {
+	m.mux.Lock()
+	defer m.mux.Unlock()
+	if m.m == nil {
+		m.m = map[RaftId]uint64{}
+	}
+
+	for id, index := range m.m {
+		ok := fn(id, index)
+		if !ok {
+			return
+		}
+	}
 }
+
+// Uint64Slice attaches the methods of Interface to []uint64, sorting in increasing order.
+type Uint64Slice []uint64
+
+func (x Uint64Slice) Len() int           { return len(x) }
+func (x Uint64Slice) Less(i, j int) bool { return x[i] < x[j] }
+func (x Uint64Slice) Swap(i, j int)      { x[i], x[j] = x[j], x[i] }

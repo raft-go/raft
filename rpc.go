@@ -53,7 +53,7 @@ func (t rpcArgsType) String() string {
 // rpcArgs
 type rpcArgs interface {
 	getType() rpcArgsType
-	getTerm() int
+	getTerm() uint64
 }
 
 var _ rpcArgs = AppendEntriesArgs{}
@@ -61,28 +61,28 @@ var _ rpcArgs = AppendEntriesArgs{}
 // AppendEntriesArgs
 type AppendEntriesArgs struct {
 	// leader’s term
-	Term int
+	Term uint64
 	// so follower can redirect clients
 	LeaderId RaftId
 
 	// index of log entry immediately preceding new ones
-	PrevLogIndex int
+	PrevLogIndex uint64
 	// term of prevLogIndex entry
-	PrevLogTerm int
+	PrevLogTerm uint64
 
 	// log entries to store (empty for heartbeat;
 	// may send more than one for efficiency)
 	Entries []LogEntry
 
 	// leader’s commitIndex
-	LeaderCommit int
+	LeaderCommit uint64
 }
 
 func (AppendEntriesArgs) getType() rpcArgsType {
 	return rpcArgsTypeAppendEntriesArgs
 }
 
-func (a AppendEntriesArgs) getTerm() int {
+func (a AppendEntriesArgs) getTerm() uint64 {
 	return a.Term
 }
 
@@ -91,7 +91,7 @@ var _ rpcArgs = AppendEntriesResults{}
 // AppendEntriesResults
 type AppendEntriesResults struct {
 	// currentTerm
-	Term int
+	Term uint64
 	// for leader to update itself success true
 	// if follower contained entry matching
 	Success bool
@@ -101,7 +101,7 @@ func (AppendEntriesResults) getType() rpcArgsType {
 	return rpcArgsTypeAppendEntriesResults
 }
 
-func (a AppendEntriesResults) getTerm() int {
+func (a AppendEntriesResults) getTerm() uint64 {
 	return a.Term
 }
 
@@ -110,21 +110,21 @@ var _ rpcArgs = RequestVoteArgs{}
 // RequestVoteArgs
 type RequestVoteArgs struct {
 	// term candidate’s term
-	Term int
+	Term uint64
 	// candidateId candidate requesting vote
 	CandidateId RaftId
 
 	// lastLogIndex index of candidate’s last log entry (§5.4)
-	LastLogIndex int
+	LastLogIndex uint64
 	// lastLogTerm term of candidate’s last log entry (§5.4)
-	LastLogTerm int
+	LastLogTerm uint64
 }
 
 func (RequestVoteArgs) getType() rpcArgsType {
 	return rpcArgsTypeRequestVoteArgs
 }
 
-func (a RequestVoteArgs) getTerm() int {
+func (a RequestVoteArgs) getTerm() uint64 {
 	return a.Term
 }
 
@@ -133,7 +133,7 @@ var _ rpcArgs = RequestVoteResults{}
 // RequestVoteResults
 type RequestVoteResults struct {
 	// currentTerm, for candidate to update itself
-	Term int
+	Term uint64
 	// true means candidate received vote
 	VoteGranted bool
 }
@@ -142,7 +142,7 @@ func (RequestVoteResults) getType() rpcArgsType {
 	return rpcArgsTypeRequestVoteResults
 }
 
-func (r RequestVoteResults) getTerm() int {
+func (r RequestVoteResults) getTerm() uint64 {
 	return r.Term
 }
 

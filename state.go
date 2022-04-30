@@ -31,8 +31,8 @@ type state interface {
 	// CurrentIndex
 	//	latest term server has seen (initialized to 0
 	//	on first boot, increases monotonically)
-	GetCurrentTerm() int
-	SetCurrentTerm(int) error
+	GetCurrentTerm() uint64
+	SetCurrentTerm(uint64) error
 
 	// VotedFor
 	// 	candidateId that received vote in current term (or null if none)
@@ -46,13 +46,13 @@ type state interface {
 	// CommitIndex
 	// 	index of highest log entry known to be
 	// 	committed (initialized to 0, increases monotonically)
-	GetCommitIndex() int
-	SetCommitIndex(int)
+	GetCommitIndex() uint64
+	SetCommitIndex(uint64)
 	// LastApplied
 	// 	index of highest log entry applied to state machine
 	//  (initialized to 0, increases monotonically)
-	GetLastApplied() int
-	SetLastApplied(int)
+	GetLastApplied() uint64
+	SetLastApplied(uint64)
 }
 
 var _ state = (*state_)(nil)
@@ -65,18 +65,18 @@ type state_ struct {
 	keyCurrentTerm []byte
 	keyVotedFor    []byte
 
-	currentTerm int
+	currentTerm uint64
 	votedFor    RaftId
 
-	commitIndex int
-	lastApplied int
+	commitIndex uint64
+	lastApplied uint64
 }
 
 func (s *state_) loadCurrentTerm() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	term, err := s.store.GetInt(s.keyCurrentTerm)
+	term, err := s.store.GetUint64(s.keyCurrentTerm)
 	if err != nil {
 		return err
 	}
@@ -103,19 +103,22 @@ func (s *state_) loadVotedFor() error {
 	return nil
 }
 
-func (s *state_) GetCurrentTerm() int {
+func (s *state_) GetCurrentTerm() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	return s.currentTerm
 }
 
-func (s *state_) SetCurrentTerm(term int) error {
+func (s *state_) SetCurrentTerm(term uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.currentTerm >= term {
+		return nil
+	}
 	s.currentTerm = term
-	return s.store.SetInt(s.keyCurrentTerm, term)
+	return s.store.SetUint64(s.keyCurrentTerm, term)
 }
 
 func (s *state_) GetVotedFor() RaftId {
@@ -133,30 +136,36 @@ func (s *state_) SetVotedFor(votedFor RaftId) error {
 	return s.store.Set(s.keyVotedFor, []byte(votedFor))
 }
 
-func (s *state_) GetCommitIndex() int {
+func (s *state_) GetCommitIndex() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	return s.commitIndex
 }
 
-func (s *state_) SetCommitIndex(i int) {
+func (s *state_) SetCommitIndex(i uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.commitIndex >= i {
+		return
+	}
 	s.commitIndex = i
 }
 
-func (s *state_) GetLastApplied() int {
+func (s *state_) GetLastApplied() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	return s.lastApplied
 }
 
-func (s *state_) SetLastApplied(i int) {
+func (s *state_) SetLastApplied(i uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.lastApplied >= i {
+		return
+	}
 	s.lastApplied = i
 }

@@ -229,7 +229,7 @@ func (r *raft) loopApplyCommitted() {
 			r.commitCond.L.Lock()
 			defer r.commitCond.L.Unlock()
 
-			var lastApplied, commitIndex int
+			var lastApplied, commitIndex uint64
 			for commitIndex <= lastApplied {
 				r.commitCond.Wait()
 				commitIndex, lastApplied = r.GetCommitIndex(), r.GetLastApplied()
@@ -244,7 +244,7 @@ func (r *raft) loopApplyCommitted() {
 }
 
 // syncLeaderCommit 同步 Leader.CommitIndex
-func (r *raft) syncLeaderCommit(leaderCommit int) error {
+func (r *raft) syncLeaderCommit(leaderCommit uint64) error {
 	// 	If leaderCommit > commitIndex,
 	//	set commitIndex = min(leaderCommit, index of last new entry)
 	if leaderCommit <= r.GetCommitIndex() {
@@ -292,6 +292,8 @@ func (r *raft) ApplyCommitted() error {
 	}
 	commands := newCommands(data)
 
+	r.Debug("commitIndex[%d] lastApplied[%d] entries[%d]", commitIndex, lastApplied, entries)
+
 	// apply
 	appliedCount, err := r.apply(commands)
 	if err != nil {
@@ -299,7 +301,7 @@ func (r *raft) ApplyCommitted() error {
 	}
 
 	// update lastApplied
-	lastApplied += appliedCount
+	lastApplied += uint64(appliedCount)
 	r.SetLastApplied(lastApplied)
 	return nil
 }
@@ -342,7 +344,7 @@ func (r *raft) newRPCService() RPCService {
 	}
 }
 
-func (r *raft) ToFollower(term int, votedFor ...RaftId) (server, error) {
+func (r *raft) ToFollower(term uint64, votedFor ...RaftId) (server, error) {
 	r.SetCurrentTerm(term)
 	if len(votedFor) > 0 {
 		err := r.SetVotedFor(votedFor[0])
