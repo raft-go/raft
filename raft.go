@@ -392,9 +392,6 @@ func (r *raft) toLeader() (server, error) {
 		return nil, err
 	}
 	for raftId := range server.peers {
-		if raftId == r.Id() {
-			continue
-		}
 		server.nextIndex.Store(raftId, lastLogIndex+1)
 		server.matchIndex.Store(raftId, 0)
 	}

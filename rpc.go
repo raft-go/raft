@@ -193,13 +193,15 @@ func (s *rpcService) AppendEntries(args AppendEntriesArgs, results *AppendEntrie
 	// 	3. If an existing entry conflicts with a new one (same index
 	// 		but different terms), delete the existing entry and all that follow it (§5.3)
 	// 	4. Append any new entries not already in the log
-	err = s.PopAfter(args.PrevLogIndex)
-	if err != nil {
-		return err
-	}
-	err = s.Append(args.Entries...)
-	if err != nil {
-		return err
+	if len(args.Entries) > 0 {
+		err = s.PopAfter(args.PrevLogIndex)
+		if err != nil {
+			return err
+		}
+		err = s.Append(args.Entries...)
+		if err != nil {
+			return err
+		}
 	}
 	// 	5. If leaderCommit > commitIndex,
 	//		set commitIndex = min(leaderCommit, index of last new entry)

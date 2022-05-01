@@ -29,7 +29,7 @@ func TestHandle(t *testing.T) {
 	}()
 	cluster.waitLeaderShip()
 
-	const n = 5000 * 10
+	const n = 5000
 	commands := make([]Command, 0, n)
 	for i := 0; i < n; i++ {
 		commands = append(commands, Command(fmt.Sprintf("command %d", i)))

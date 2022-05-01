@@ -107,7 +107,10 @@ func (l *leader) sendHeartbeats() error {
 		go func() {
 			defer wg.Done()
 			// empty args
-			var args AppendEntriesArgs
+			var args = AppendEntriesArgs{
+				Term:     l.GetCurrentTerm(),
+				LeaderId: l.Id(),
+			}
 			l.rpc.CallAppendEntries(addr, args)
 		}()
 	}
@@ -140,11 +143,6 @@ func (l *leader) replicate(ctx context.Context) error {
 
 		var wg sync.WaitGroup
 		for id, addr := range l.peers {
-			if l.Id() == id {
-				replicateCh <- struct{}{}
-				continue
-			}
-
 			wg.Add(1)
 			go func(id RaftId, addr RaftAddr) {
 				defer wg.Done()
@@ -155,6 +153,19 @@ func (l *leader) replicate(ctx context.Context) error {
 						return
 					default:
 						// no-op
+					}
+
+					if l.Id() == id {
+						lastLogIndex, _, err := l.Last()
+						if err != nil {
+							continue
+						}
+						netxIndex := lastLogIndex + 1
+						l.nextIndex.Store(id, netxIndex)
+						matchIndex := lastLogIndex
+						l.matchIndex.Store(id, matchIndex)
+						replicateCh <- struct{}{}
+						return
 					}
 
 					nextIndex, _ := l.nextIndex.Load(id)
@@ -271,7 +282,7 @@ func (l *leader) refreshCommitIndex() (bool, error) {
 	})
 	commitIndex := l.GetCommitIndex()
 	sort.Sort(uint64Slice(matchIndex))
-	mid := len(matchIndex) / 2
+	mid := (len(matchIndex) - 1) / 2
 	nextCommitIndex := matchIndex[mid]
 
 	if nextCommitIndex <= commitIndex {
