@@ -23,11 +23,11 @@ func (f *follower) Run() (server, error) {
 				return server, nil
 			}
 		case <-f.ticker.C:
-			f.Debug("Election timeout")
+			f.debug("Election timeout")
 			// If election timeout elapses without receiving AppendEntries
 			// 	 RPC from current leader or granting vote to candidate:
 			// 		convert to candidate
-			return f.ToCandidate(), nil
+			return f.toCandidate(), nil
 		}
 	}
 }
@@ -37,7 +37,7 @@ func (f *follower) Handle(context.Context, ...Command) error {
 }
 
 func (f *follower) ResetTimer() {
-	timeout := f.ElectionTimeout()
+	timeout := f.randomElectionTimeout()
 	f.ticker.Reset(timeout)
 }
 

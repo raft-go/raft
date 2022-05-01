@@ -34,13 +34,13 @@ func (c *candidate) Run() (server, error) {
 					return server, nil
 				}
 			case <-c.ticker.C:
-				c.Debug("Election timeout")
+				c.debug("Election timeout")
 				// If election timeout elapses:
 				//	start new election
-				return c.ToCandidate(), nil
+				return c.toCandidate(), nil
 			case _, ok = <-voteCh:
 				if !ok {
-					c.Debug("Failed to win the election")
+					c.debug("Failed to win the election")
 					continue
 				}
 
@@ -48,8 +48,8 @@ func (c *candidate) Run() (server, error) {
 				// • If votes received from
 				//   majority of servers: become leader
 				if count > len(c.peers)/2 {
-					c.Debug("Achieved Majority vote(%d)", count)
-					return c.ToLeader()
+					c.debug("Achieved Majority vote(%d)", count)
+					return c.toLeader()
 				}
 			}
 		}
@@ -64,8 +64,8 @@ func (c *candidate) Handle(context.Context, ...Command) error {
 
 func (c *candidate) ResetTimer() {
 	c.once.Do(func() {
-		c.Debug("Reset election timer")
-		timeout := c.ElectionTimeout()
+		c.debug("Reset election timer")
+		timeout := c.randomElectionTimeout()
 		c.ticker.Reset(timeout)
 	})
 }
@@ -88,7 +88,7 @@ func (c *candidate) String() string {
 func (c *candidate) reactToRPCArgs(args rpcArgs) (server server, converted bool, err error) {
 	if args.getType() == rpcArgsTypeAppendEntriesArgs {
 		if args.getTerm() >= c.GetCurrentTerm() {
-			server, err = c.ToFollower(args.getTerm())
+			server, err = c.toFollower(args.getTerm())
 			if err != nil {
 				return nil, false, err
 			}
@@ -132,17 +132,17 @@ func (c *candidate) elect() (<-chan struct{}, error) {
 			go func() {
 				defer wg.Done()
 
-				c.Debug("-> Request a vote %s", id)
+				c.debug("-> Request a vote %s", id)
 				results, err := c.rpc.CallRequestVote(addr, args)
 				if err != nil {
-					c.Debug("Call %s's RequestVote, err: %+v", id, err)
+					c.debug("Call %s's RequestVote, err: %+v", id, err)
 					return
 				}
 				if results.VoteGranted {
-					c.Debug("<- Vote up %s", id)
+					c.debug("<- Vote up %s", id)
 					voteCh <- struct{}{}
 				} else {
-					c.Debug("<- Vote down %s", id)
+					c.debug("<- Vote down %s", id)
 				}
 			}()
 		}

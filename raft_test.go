@@ -29,7 +29,7 @@ func TestHandle(t *testing.T) {
 	}()
 	cluster.waitLeaderShip()
 
-	const n = 5000 * 5
+	const n = 5000 * 10
 	commands := make([]Command, 0, n)
 	for i := 0; i < n; i++ {
 		commands = append(commands, Command(fmt.Sprintf("command %d", i)))
@@ -73,7 +73,7 @@ func TestHandle(t *testing.T) {
 				count++
 			}
 		}
-		if count <= len(cluster.agents)/2 {
+		if len(commands) > 0 && count <= len(cluster.agents)/2 {
 			t.Errorf("expect majority raft node append command, but only %d/%d", count, len(cluster.agents))
 		}
 		t.Logf("append log entries to %d/%d raft node", count, len(cluster.agents))
@@ -94,14 +94,14 @@ func TestHandle(t *testing.T) {
 			for i := 0; i < agent.length(); i++ {
 				command := commands[i]
 				if got := agent.get(i); bytes.Compare(got, command) != 0 {
-					t.Errorf("i: %d, expect apply command: %q, got: %q", i, command, got)
+					t.Errorf("raft[%s] i: %d, expect apply command: %q, got: %q", agent.raft.Id(), i, command, got)
 				}
 			}
 			if agent.length() == len(commands) {
 				count++
 			}
 		}
-		if count < 1 {
+		if len(commands) > 0 && count < 1 {
 			t.Errorf("expect at least one raft node apply command, but only %d", count)
 		}
 		t.Logf("apply log entries to %d/%d raft node", count, len(cluster.agents))

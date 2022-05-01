@@ -9,7 +9,11 @@ type Commands interface {
 	Data() []Command
 }
 
-func newCommands(data []Command) *commands {
+func newCommands(entries []LogEntry) *commands {
+	var data = make([]Command, 0, len(entries))
+	for i := range entries {
+		data = append(data, entries[i].Command)
+	}
 	return &commands{
 		data: data,
 	}

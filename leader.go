@@ -2,7 +2,6 @@ package raft
 
 import (
 	"context"
-	"errors"
 	"sort"
 	"sync"
 )
@@ -22,6 +21,7 @@ type leader struct {
 	//	increases monotonically)
 	matchIndex raftIdIndexMap
 
+	// once resetTimer
 	once sync.Once
 }
 
@@ -93,27 +93,25 @@ func (l *leader) Handle(ctx context.Context, cmd ...Command) error {
 		return nil
 	}
 
-	return l.ApplyCommitted()
+	return l.applyCommitted()
 }
 
 func (l *leader) sendHeartbeats() error {
-	timeout := l.HeartbeatTimeout() / 2
-	ctx := context.Background()
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	err := l.replicate(ctx)
-	if errors.Is(err, context.DeadlineExceeded) {
-		return nil
+	// Leaders send periodic
+	// heartbeats (AppendEntries RPCs that carry no log entries)
+	// to all followers in order to maintain their authority.
+	var wg sync.WaitGroup
+	for _, addr := range l.peers {
+		addr := addr
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// empty args
+			var args AppendEntriesArgs
+			l.rpc.CallAppendEntries(addr, args)
+		}()
 	}
-	ok, err := l.refreshCommitIndex()
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return nil
-	}
-	l.commitCond.Signal()
+	wg.Wait()
 	return nil
 }
 
@@ -123,7 +121,7 @@ func (l *leader) ResetTimer() {
 	// leader 状态只需要重置一次定时器
 	// 接受到其他节点的请求, 无需重置定时器
 	l.once.Do(func() {
-		timeout := l.HeartbeatTimeout()
+		timeout := l.heartbeatTimeout()
 		l.ticker.Reset(timeout)
 	})
 }
@@ -198,7 +196,7 @@ func (l *leader) replicate(ctx context.Context) error {
 
 					results, err := l.rpc.CallAppendEntries(addr, args)
 					if err != nil {
-						l.Debug("Call %s's AppendEntries, err: %+v", id, err)
+						l.debug("Call %s's AppendEntries, err: %+v", id, err)
 						return
 					}
 
@@ -215,7 +213,7 @@ func (l *leader) replicate(ctx context.Context) error {
 					}
 					// If AppendEntries fails because of log inconsistency:
 					// decrement nextIndex and retry (§5.3)
-					if nextIndex == 0 {
+					if nextIndex == 1 {
 						return
 					}
 					l.nextIndex.Store(id, nextIndex-1)
@@ -272,7 +270,7 @@ func (l *leader) refreshCommitIndex() (bool, error) {
 		return true
 	})
 	commitIndex := l.GetCommitIndex()
-	sort.Sort(Uint64Slice(matchIndex))
+	sort.Sort(uint64Slice(matchIndex))
 	mid := len(matchIndex) / 2
 	nextCommitIndex := matchIndex[mid]
 
@@ -339,9 +337,9 @@ func (m *raftIdIndexMap) Range(fn func(id RaftId, index uint64) bool) {
 	}
 }
 
-// Uint64Slice attaches the methods of Interface to []uint64, sorting in increasing order.
-type Uint64Slice []uint64
+// uint64Slice attaches the methods of Interface to []uint64, sorting in increasing order.
+type uint64Slice []uint64
 
-func (x Uint64Slice) Len() int           { return len(x) }
-func (x Uint64Slice) Less(i, j int) bool { return x[i] < x[j] }
-func (x Uint64Slice) Swap(i, j int)      { x[i], x[j] = x[j], x[i] }
+func (x uint64Slice) Len() int           { return len(x) }
+func (x uint64Slice) Less(i, j int) bool { return x[i] < x[j] }
+func (x uint64Slice) Swap(i, j int)      { x[i], x[j] = x[j], x[i] }

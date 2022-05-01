@@ -134,11 +134,11 @@ func (r *raft) init() (err error) {
 	rpc := newRpcWrapper(r, r.rpc)
 	r.rpc = rpc
 
-	timeout := r.ElectionTimeout()
+	timeout := r.randomElectionTimeout()
 	ticker := time.NewTicker(timeout)
 	r.ticker = ticker
 
-	server, err := r.ToFollower(r.GetCurrentTerm())
+	server, err := r.toFollower(r.GetCurrentTerm())
 	r.SetServer(server)
 	return err
 }
@@ -174,13 +174,13 @@ func (r *raft) Run() (err error) {
 		return ErrRanRepeatedly
 	}
 
-	r.Debug("Run raft consensuse module")
+	r.debug("Run raft consensuse module")
 	rand.Seed(time.Now().UnixNano())
 
 	go func() {
 		err := r.runRPC()
 		if err != nil {
-			r.Debug("run rpc, err: %+v", err)
+			r.debug("run rpc, err: %+v", err)
 			os.Exit(1)
 		}
 	}()
@@ -235,9 +235,9 @@ func (r *raft) loopApplyCommitted() {
 				commitIndex, lastApplied = r.GetCommitIndex(), r.GetLastApplied()
 			}
 
-			err := r.ApplyCommitted()
+			err := r.applyCommitted()
 			if err != nil {
-				r.Debug("apply commands, err: %+v", err)
+				r.debug("apply commands, err: %+v", err)
 			}
 		}()
 	}
@@ -259,7 +259,6 @@ func (r *raft) syncLeaderCommit(leaderCommit uint64) error {
 		commitIndex = lastIndex
 	}
 	r.state.SetCommitIndex(commitIndex)
-	r.Debug("Sync commitIndex to %d", commitIndex)
 
 	// 通知 commitIndex 更新事件发生
 	r.commitCond.Signal()
@@ -270,12 +269,12 @@ func (r *raft) syncLeaderCommit(leaderCommit uint64) error {
 // 返回 应用的 Command 数量 appliedCount
 type Apply func(commands Commands) (appliedCount int, err error)
 
-// ApplyCommitted
+// applyCommitted
 //
 // Implementation:
 // 		If commitIndex > lastApplied: increment lastApplied, apply
 // 		log[lastApplied] to state machine(§5.3)
-func (r *raft) ApplyCommitted() error {
+func (r *raft) applyCommitted() error {
 	commitIndex, lastApplied := r.GetCommitIndex(), r.GetLastApplied()
 	if commitIndex <= lastApplied {
 		return nil
@@ -286,13 +285,7 @@ func (r *raft) ApplyCommitted() error {
 	if err != nil {
 		return err
 	}
-	var data = make([]Command, 0, len(entries))
-	for i := range entries {
-		data = append(data, entries[i].Command)
-	}
-	commands := newCommands(data)
-
-	r.Debug("commitIndex[%d] lastApplied[%d] entries[%d]", commitIndex, lastApplied, entries)
+	commands := newCommands(entries)
 
 	// apply
 	appliedCount, err := r.apply(commands)
@@ -327,9 +320,9 @@ func (r *raft) sendRPCArgs(args rpcArgs) {
 // 		set currentTerm = T, convert to follower (§5.1)
 func (r *raft) reactToRPCArgs(args rpcArgs) (server server, converted bool, err error) {
 	if args.getTerm() > r.GetCurrentTerm() {
-		r.Debug("React to args(term: %d, type: %q)",
+		r.debug("React to args(term: %d, type: %q)",
 			args.getTerm(), args.getType())
-		server, err = r.ToFollower(args.getTerm())
+		server, err = r.toFollower(args.getTerm())
 		if err != nil {
 			return nil, false, err
 		}
@@ -344,7 +337,7 @@ func (r *raft) newRPCService() RPCService {
 	}
 }
 
-func (r *raft) ToFollower(term uint64, votedFor ...RaftId) (server, error) {
+func (r *raft) toFollower(term uint64, votedFor ...RaftId) (server, error) {
 	r.SetCurrentTerm(term)
 	if len(votedFor) > 0 {
 		err := r.SetVotedFor(votedFor[0])
@@ -356,12 +349,12 @@ func (r *raft) ToFollower(term uint64, votedFor ...RaftId) (server, error) {
 		raft: r,
 	}
 	server.ResetTimer()
-	defer r.Debug("Convert to follower")
+	defer r.debug("Convert to follower")
 
 	return server, nil
 }
 
-// ToCandidate
+// toCandidate
 //
 // • On conversion to candidate, start election:
 //
@@ -370,8 +363,8 @@ func (r *raft) ToFollower(term uint64, votedFor ...RaftId) (server, error) {
 // • Vote for self
 //
 // • Reset election timer
-func (r *raft) ToCandidate() server {
-	defer r.Debug("Convert to candidate")
+func (r *raft) toCandidate() server {
+	defer r.debug("Convert to candidate")
 
 	nextTerm := r.GetCurrentTerm() + 1
 	r.SetCurrentTerm(nextTerm)
@@ -384,9 +377,9 @@ func (r *raft) ToCandidate() server {
 	return server
 }
 
-// ToLeader
-func (r *raft) ToLeader() (server, error) {
-	defer r.Debug("Convert to leader")
+// toLeader
+func (r *raft) toLeader() (server, error) {
+	defer r.debug("Convert to leader")
 
 	server := &leader{
 		raft: r,
@@ -410,21 +403,21 @@ func (r *raft) ToLeader() (server, error) {
 	return server, nil
 }
 
-// HeartbeatTimeout 心跳超时
-func (r *raft) HeartbeatTimeout() time.Duration {
+// heartbeatTimeout 心跳超时
+func (r *raft) heartbeatTimeout() time.Duration {
 	return r.electionTimeout[0] / 2
 }
 
-// ElectionTimeout 随机选举超时
-func (r *raft) ElectionTimeout() time.Duration {
+// randomElectionTimeout 随机选举超时
+func (r *raft) randomElectionTimeout() time.Duration {
 	start := r.electionTimeout[0]
 	end := r.electionTimeout[1]
 	d := rand.Int63n(int64(end - start))
 	return start + time.Duration(d)
 }
 
-// Debug
-func (r *raft) Debug(format string, args ...interface{}) {
+// debug
+func (r *raft) debug(format string, args ...interface{}) {
 	format = fmt.Sprintf("%s %s", r.who(), format)
 	r.logger.Debug(format, args...)
 }

@@ -227,16 +227,16 @@ func (s *rpcService) RequestVote(args RequestVoteArgs, results *RequestVoteResul
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.Debug("<- Vote request %s at %d", args.CandidateId, args.Term)
+	s.debug("<- Vote request %s at %d", args.CandidateId, args.Term)
 	s.sendRPCArgs(args)
 	s.GetServer().ResetTimer()
 	defer func() {
 		results.Term = s.GetCurrentTerm()
 		if results.VoteGranted {
-			s.Debug("-> Vote up %s at %d", args.CandidateId, args.Term)
+			s.debug("-> Vote up %s at %d", args.CandidateId, args.Term)
 			s.SetVotedFor(args.CandidateId)
 		} else {
-			s.Debug("-> Vote down %s at %d", args.CandidateId, args.Term)
+			s.debug("-> Vote down %s at %d", args.CandidateId, args.Term)
 		}
 	}()
 
