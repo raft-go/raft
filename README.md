@@ -4,3 +4,10 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/mind1949/raft)](https://goreportcard.com/report/github.com/mind1949/raft)
 
 Implement [raft consensus protocol](https://raft.github.io/raft.pdf) .
+
+## Features
+
+- [X] Leader election
+- [X] Log replication
+- [ ] Membership changes
+- [ ] Log compaction

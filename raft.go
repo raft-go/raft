@@ -14,10 +14,14 @@ import (
 var (
 	ErrStopped       = errors.New("err: raft consensus module has been stopped")
 	ErrRanRepeatedly = errors.New("err: raft consensus module can not bee ran repeatedly")
+	ErrInvalidRaftId = errors.New("err: raft id is invalid")
 )
 
 // New 实例化一个 raft 一致性模型
 func New(id RaftId, addr RaftAddr, apply Apply, store Store, log Log, optFns ...OptFn) (Raft, error) {
+	if id.isNil() {
+		return nil, ErrInvalidRaftId
+	}
 	opts := newOpts()
 	for _, fn := range optFns {
 		fn(opts)
@@ -169,7 +173,10 @@ func (r *raft) init() (err error) {
 			if err != nil {
 				return err
 			}
-			r.config.Use(index, peers)
+			err = r.config.Use(index, peers)
+			if err != nil {
+				return err
+			}
 			r.SetCommitIndex(index)
 		}
 	}
@@ -321,6 +328,7 @@ func (r *raft) applyCommitted() error {
 	if err != nil {
 		return err
 	}
+	// TODO: filter cluster configuration log entry
 	commands := newCommands(entries)
 
 	// apply
@@ -330,6 +338,7 @@ func (r *raft) applyCommitted() error {
 	}
 
 	// update lastApplied
+	// FIXME: how to filter cluster configuration log entry count ?
 	lastApplied += uint64(appliedCount)
 	r.SetLastApplied(lastApplied)
 	return nil
@@ -418,7 +427,8 @@ func (r *raft) toLeader() (server, error) {
 	defer r.debug("Convert to leader")
 
 	server := &leader{
-		raft: r,
+		raft:             r,
+		configCommitCond: sync.NewCond(&sync.Mutex{}),
 	}
 
 	// Volatile state on leaders:
@@ -469,4 +479,16 @@ func (r *raft) who() string {
 	}
 
 	return fmt.Sprintf("[%s:%d:%d:%d:%s]", r.Id(), r.GetCurrentTerm(), r.GetCommitIndex(), r.GetLastApplied(), state)
+}
+
+// AddServer
+func (r *raft) AddServer(args AddServerArgs, results *AddServerResults) error {
+	// Reply NOT_LEADER if not leader
+	return ErrNotLeader
+}
+
+// RemoveServer
+func (r *raft) RemoveServer(args RemoveServerArgs, results *RemoveServerResults) error {
+	// Reply NOT_LEADER if not leader
+	return ErrNotLeader
 }

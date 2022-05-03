@@ -21,8 +21,16 @@ type RPC interface {
 
 // RPCService raft rpc service
 type RPCService interface {
+	// Invoked by leader to replicate log entries (§5.3);
+	//	also used as heartbeat (§5.2).
 	AppendEntries(args AppendEntriesArgs, results *AppendEntriesResults) error
+	// Invoked by candidates to gather votes (§5.2).
 	RequestVote(args RequestVoteArgs, results *RequestVoteResults) error
+
+	// Invoked by admin to add a server to cluster configuration
+	AddServer(args AddServerArgs, results *AddServerResults) error
+	// Invoked by admin to remove a server to cluster configuration
+	RemoveServer(args RemoveServerArgs, results *RemoveServerResults) error
 }
 
 type rpcArgsType int8
@@ -144,6 +152,44 @@ func (RequestVoteResults) getType() rpcArgsType {
 
 func (r RequestVoteResults) getTerm() uint64 {
 	return r.Term
+}
+
+// AddServerArgs
+type AddServerArgs struct {
+	// id of server to add to configuration
+	NewId RaftId
+	// address of server to add to configuration
+	NewServer RaftAddr
+}
+
+// AddServerResults
+type AddServerResults struct {
+	membershipChangeResults
+}
+
+// membershipChangeResults membership change results
+type membershipChangeResults struct {
+	// OK if server was added successfully
+	Status string
+	// address of recent leader, if known
+	LeaderHints RaftAddr
+}
+
+func (r *membershipChangeResults) SetOK() {
+	r.Status = "OK"
+}
+
+// RemoveServerArgs
+type RemoveServerArgs struct {
+	// id of server to remove from configuration
+	OldId RaftId
+	// address of server to remove from configuration
+	OldServer RaftAddr
+}
+
+// RemoveServerResults
+type RemoveServerResults struct {
+	membershipChangeResults
 }
 
 var _ RPCService = (*rpcService)(nil)
@@ -279,6 +325,18 @@ func (s *rpcService) RequestVote(args RequestVoteArgs, results *RequestVoteResul
 	}
 
 	return nil
+}
+
+// AddServer
+// invoked by admin to add a server to cluster configuration
+func (s *rpcService) AddServer(args AddServerArgs, results *AddServerResults) error {
+	return s.raft.GetServer().AddServer(args, results)
+}
+
+// RemoveServer
+// invoked by admin to remove a server to cluster configuration
+func (s *rpcService) RemoveServer(args RemoveServerArgs, results *RemoveServerResults) error {
+	return s.raft.GetServer().RemoveServer(args, results)
 }
 
 func newDefaultRpc() *defaultRPC {

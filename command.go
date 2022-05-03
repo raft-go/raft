@@ -12,6 +12,9 @@ type Commands interface {
 func newCommands(entries []LogEntry) *commands {
 	var data = make([]Command, 0, len(entries))
 	for i := range entries {
+		if entries[i].Type != logEntryTypeCommand {
+			continue
+		}
 		data = append(data, entries[i].Command)
 	}
 	return &commands{

@@ -8,7 +8,7 @@ import (
 // configStore use to manage cluster configurations
 type configStore interface {
 	// Peers get a deep copy of last cluster configuration peers
-	Peers() []raftPeer
+	Peers() raftPeers
 	// LogIndex get the log entry index of last cluster configuration
 	LogIndex() uint64
 	// Use logIndex and peers as latest cluster configuration
@@ -39,7 +39,7 @@ type configManager struct {
 }
 
 // Peers return a deep copy of last cluster configuration peers
-func (m *configManager) Peers() []raftPeer {
+func (m *configManager) Peers() raftPeers {
 	m.mux.RLock()
 	defer m.mux.RUnlock()
 
@@ -152,6 +152,19 @@ func (c clusterConfig) Clone() clusterConfig {
 	cc.LogIndex = c.LogIndex
 	cc.Peers = append(cc.Peers, c.Peers...)
 	return cc
+}
+
+type raftPeers []raftPeer
+
+// getById get raft peer by id
+func (peers raftPeers) getById(id RaftId) (peer raftPeer, ok bool) {
+	for i := range peers {
+		peer := peers[i]
+		if peer.Id == id {
+			return peer, true
+		}
+	}
+	return peer, false
 }
 
 func peers2Command(peers []raftPeer) Command {
