@@ -33,7 +33,7 @@ func (f *follower) Run() (server, error) {
 }
 
 func (f *follower) Handle(context.Context, ...Command) error {
-	return ErrIsNotLeader
+	return ErrNotLeader
 }
 
 func (f *follower) ResetTimer() {

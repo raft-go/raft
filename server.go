@@ -7,7 +7,7 @@ import (
 )
 
 var (
-	ErrIsNotLeader = errors.New("err: raft consensuse module isn't at Leader state")
+	ErrNotLeader = errors.New("err: raft consensuse module isn't at Leader state")
 )
 
 type serverAccessor interface {

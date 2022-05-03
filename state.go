@@ -6,8 +6,8 @@ func newState(store Store) (*state_, error) {
 	s := &state_{
 		store: store,
 
-		keyCurrentTerm: []byte("state.CurrentTerm"),
-		keyVotedFor:    []byte("state.VotedFor"),
+		keyCurrentTerm: []byte("raft.state.CurrentTerm"),
+		keyVotedFor:    []byte("raft.state.VotedFor"),
 	}
 	err := s.loadCurrentTerm()
 	if err != nil {

@@ -101,11 +101,16 @@ func (l *leader) sendHeartbeats() error {
 	// heartbeats (AppendEntries RPCs that carry no log entries)
 	// to all followers in order to maintain their authority.
 	var wg sync.WaitGroup
-	for _, addr := range l.peers {
-		addr := addr
+	peers := l.config.Peers()
+	for i := range peers {
+		peer := peers[i]
+		id, addr := peer.Id, peer.Addr
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			if l.Id() == id {
+				return
+			}
 			// empty args
 			var args = AppendEntriesArgs{
 				Term:     l.GetCurrentTerm(),
@@ -136,13 +141,16 @@ func (*leader) String() string {
 // replicate
 // replicate log entries
 func (l *leader) replicate(ctx context.Context) error {
-	replicateCh := make(chan struct{}, len(l.peers))
+	peers := l.config.Peers()
+	replicateCh := make(chan struct{}, len(peers))
 
 	go func() {
 		defer close(replicateCh)
 
 		var wg sync.WaitGroup
-		for id, addr := range l.peers {
+		for i := range peers {
+			peer := peers[i]
+			id, addr := peer.Id, peer.Addr
 			wg.Add(1)
 			go func(id RaftId, addr RaftAddr) {
 				defer wg.Done()
@@ -241,7 +249,7 @@ func (l *leader) replicate(ctx context.Context) error {
 			return ctx.Err()
 		case <-replicateCh:
 			count++
-			if count > len(l.peers)/2 {
+			if count > len(peers)/2 {
 				return nil
 			}
 		}

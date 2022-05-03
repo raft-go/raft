@@ -20,6 +20,7 @@ func (c *candidate) Run() (server, error) {
 		return nil, err
 	}
 
+	peers := c.config.Peers()
 	for {
 		for ok := true; ok; {
 			select {
@@ -47,7 +48,7 @@ func (c *candidate) Run() (server, error) {
 				count++
 				// • If votes received from
 				//   majority of servers: become leader
-				if count > len(c.peers)/2 {
+				if count > len(peers)/2 {
 					c.debug("Achieved Majority vote(%d)", count)
 					return c.toLeader()
 				}
@@ -59,7 +60,7 @@ func (c *candidate) Run() (server, error) {
 }
 
 func (c *candidate) Handle(context.Context, ...Command) error {
-	return ErrIsNotLeader
+	return ErrNotLeader
 }
 
 func (c *candidate) ResetTimer() {
@@ -116,13 +117,15 @@ func (c *candidate) elect() (<-chan struct{}, error) {
 		LastLogTerm:  lastLogTerm,
 	}
 
-	voteCh := make(chan struct{}, len(c.peers))
+	peers := c.config.Peers()
+	voteCh := make(chan struct{}, len(peers))
 
 	go func() {
 		defer close(voteCh)
 		var wg sync.WaitGroup
-		for id, addr := range c.peers {
-			id, addr := id, addr
+		for i := range peers {
+			peer := peers[i]
+			id, addr := peer.Id, peer.Addr
 			if c.Id() == id {
 				voteCh <- struct{}{}
 				continue

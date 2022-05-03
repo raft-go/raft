@@ -17,7 +17,7 @@ var (
 )
 
 // New 实例化一个 raft 一致性模型
-func New(id RaftId, apply Apply, store Store, log Log, peers map[RaftId]RaftAddr, optFns ...OptFn) (Raft, error) {
+func New(id RaftId, addr RaftAddr, apply Apply, store Store, log Log, optFns ...OptFn) (Raft, error) {
 	opts := newOpts()
 	for _, fn := range optFns {
 		fn(opts)
@@ -39,12 +39,12 @@ func New(id RaftId, apply Apply, store Store, log Log, peers map[RaftId]RaftAddr
 		serverAccessor: newServerAccessor(&sync.Mutex{}),
 
 		rpc:  opts.rpc,
-		addr: peers[id],
+		addr: addr,
 
 		commitCond: sync.NewCond(&sync.Mutex{}),
 		rpcArgs:    make(chan rpcArgs),
 
-		peers:           peers,
+		config:          newConfigStore(store),
 		electionTimeout: opts.election,
 
 		logger: opts.logger,
@@ -113,8 +113,7 @@ type raft struct {
 	// set currentTerm = T, convert to follower (§5.1)
 	rpcArgs chan rpcArgs
 
-	// peers raft 节点
-	peers map[RaftId]RaftAddr
+	config configStore
 	// electionTimeout
 	electionTimeout [2]time.Duration
 
@@ -391,7 +390,9 @@ func (r *raft) toLeader() (server, error) {
 	if err != nil {
 		return nil, err
 	}
-	for raftId := range server.peers {
+	peers := server.config.Peers()
+	for i := range peers {
+		raftId := peers[i].Id
 		server.nextIndex.Store(raftId, lastLogIndex+1)
 		server.matchIndex.Store(raftId, 0)
 	}
