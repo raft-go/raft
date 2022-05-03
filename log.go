@@ -22,7 +22,21 @@ type Log interface {
 	PopAfter(i uint64) error
 	// Append 追加 log entry
 	Append(entries ...LogEntry) error
+	// AppendEntry append entry and return entry index
+	AppendEntry(entry LogEntry) (index uint64, err error)
 }
+
+// LogEntryType log entry type
+// represents various purpose of use
+type LogEntryType uint8
+
+const (
+	// logEntryTypeCommand represents command that applying to replicated state matchine
+	logEntryTypeCommand LogEntryType = iota
+	// LogEntryTypeClusterConfiguration represents a cluster configuration
+	// is created when a raft peer is added, removed, etc
+	logEntryTypeClusterConfiguration
+)
 
 // LogEntry raft log entry
 //	each entry contains command for state machine,
@@ -30,6 +44,7 @@ type Log interface {
 type LogEntry struct {
 	Index      uint64
 	Term       uint64
+	Type       LogEntryType
 	Command    Command
 	AppendTime time.Time
 }
@@ -78,6 +93,10 @@ func (l *memoryLog) Last() (index, term uint64, err error) {
 	l.mux.Lock()
 	defer l.mux.Unlock()
 
+	return l.last()
+}
+
+func (l *memoryLog) last() (index, term uint64, err error) {
 	if len(l.queue) == 0 {
 		return 0, 0, nil
 	}
@@ -119,17 +138,32 @@ func (l *memoryLog) PopAfter(i uint64) error {
 
 // Append 追加 log entry
 func (l *memoryLog) Append(entries ...LogEntry) error {
-	start, _, err := l.Last()
+	l.mux.Lock()
+	defer l.mux.Unlock()
+
+	start, _, err := l.last()
 	if err != nil {
 		return err
 	}
-
-	l.mux.Lock()
-	defer l.mux.Unlock()
 
 	for i := range entries {
 		entries[i].Index = start + uint64(i) + 1
 	}
 	l.queue = append(l.queue, entries...)
 	return nil
+}
+
+// AppendEntry append log entry and return log entry index
+func (l *memoryLog) AppendEntry(entry LogEntry) (index uint64, err error) {
+	l.mux.Lock()
+	defer l.mux.Unlock()
+
+	start, _, err := l.last()
+	if err != nil {
+		return 0, err
+	}
+
+	entry.Index = start + 1
+	l.queue = append(l.queue, entry)
+	return entry.Index, nil
 }

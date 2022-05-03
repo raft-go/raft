@@ -44,6 +44,8 @@ func New(id RaftId, addr RaftAddr, apply Apply, store Store, log Log, optFns ...
 		commitCond: sync.NewCond(&sync.Mutex{}),
 		rpcArgs:    make(chan rpcArgs),
 
+		bootstrapAsLeader: opts.bootstrapAsLeader,
+
 		config:          newConfigStore(store),
 		electionTimeout: opts.election,
 
@@ -113,6 +115,9 @@ type raft struct {
 	// set currentTerm = T, convert to follower (§5.1)
 	rpcArgs chan rpcArgs
 
+	// whether or not bootstrap as leader
+	bootstrapAsLeader bool
+
 	config configStore
 	// electionTimeout
 	electionTimeout [2]time.Duration
@@ -136,6 +141,38 @@ func (r *raft) init() (err error) {
 	timeout := r.randomElectionTimeout()
 	ticker := time.NewTicker(timeout)
 	r.ticker = ticker
+
+	if r.bootstrapAsLeader {
+		lastIndex, _, err := r.Log.Last()
+		if err != nil {
+			return err
+		}
+		if lastIndex == 0 {
+			// Instead, we recommend that the very first time a cluster is created,
+			// one server is initialized with a configuration entry as the first entry in its log.
+			// This configuration lists only that one server;
+			// it alone forms a majority of its configuration,
+			// so it can consider this configuration committed.
+			//
+			// Other servers from then on should be initialized with empty logs;
+			// they are added to the cluster and learn of the current configuration
+			// through the membership change mechanism.
+			peers := []raftPeer{
+				{Id: r.Id(), Addr: r.addr},
+			}
+			configEntry := LogEntry{
+				Term:    r.GetCurrentTerm(),
+				Type:    logEntryTypeClusterConfiguration,
+				Command: peers2Command(peers),
+			}
+			index, err := r.Log.AppendEntry(configEntry)
+			if err != nil {
+				return err
+			}
+			r.config.Use(index, peers)
+			r.SetCommitIndex(index)
+		}
+	}
 
 	server, err := r.toFollower(r.GetCurrentTerm())
 	r.SetServer(server)

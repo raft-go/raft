@@ -30,6 +30,12 @@ func WithLogger(logger Logger) OptFn {
 	}
 }
 
+func WithBootstrapAsLeader() OptFn {
+	return func(o *opts) {
+		o.bootstrapAsLeader = true
+	}
+}
+
 func newOpts() *opts {
 	return &opts{
 		rpc:      newDefaultRpc(),
@@ -44,6 +50,9 @@ type opts struct {
 	rpc RPC
 	// election timeout duration
 	election [2]time.Duration
+
+	// boostrap as leader
+	bootstrapAsLeader bool
 
 	logger Logger
 }

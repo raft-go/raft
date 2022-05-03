@@ -46,8 +46,8 @@ func (c *candidate) Run() (server, error) {
 				}
 
 				count++
-				// • If votes received from
-				//   majority of servers: become leader
+				// If votes received from
+				// majority of servers: become leader
 				if count > len(peers)/2 {
 					c.debug("Achieved Majority vote(%d)", count)
 					return c.toLeader()
