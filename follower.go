@@ -23,6 +23,11 @@ func (f *follower) Run() (server, error) {
 				return server, nil
 			}
 		case <-f.ticker.C:
+			// if not in Cnew steps down
+			if _, ok := f.config.Peers().getById(f.Id()); !ok {
+				continue
+			}
+
 			f.debug("Election timeout")
 			// If election timeout elapses without receiving AppendEntries
 			// 	 RPC from current leader or granting vote to candidate:

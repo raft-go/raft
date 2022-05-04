@@ -9,6 +9,8 @@ import (
 type configStore interface {
 	// Peers get a deep copy of last cluster configuration peers
 	Peers() raftPeers
+	// PrevPeers get a deep copy of previous cluster configuration peers
+	PrevPeers() raftPeers
 	// LogIndex get the log entry index of last cluster configuration
 	LogIndex() uint64
 	// Use logIndex and peers as latest cluster configuration
@@ -44,6 +46,14 @@ func (m *configManager) Peers() raftPeers {
 	defer m.mux.RUnlock()
 
 	return m.configs.Last().Clone().Peers
+}
+
+// PrevPeers get a deep copy of previous cluster configuration peers
+func (m *configManager) PrevPeers() raftPeers {
+	m.mux.RLock()
+	defer m.mux.RUnlock()
+
+	return m.configs.Prev().Clone().Peers
 }
 
 // LogIndex returns the last cluster configuration's log entry index
@@ -109,25 +119,43 @@ func (m *configManager) unmarshal(b []byte, configs *configs) error {
 type configs struct {
 	// last cluster configuration's index at buf field
 	last int
-	buf  [2]clusterConfig
+	buf  [3]clusterConfig
 }
 
 func (c *configs) Last() clusterConfig {
 	return c.buf[c.last]
 }
 
+func (c *configs) Prev() clusterConfig {
+	return c.buf[c.prevIndex()]
+}
+
 // Use use logIndex and peers as last cluster config
 func (c *configs) Use(logIndex uint64, peers []raftPeer) {
-	c.last = 1 - c.last
+	c.last = c.nextIndex()
 	c.buf[c.last].LogIndex = logIndex
 	c.buf[c.last].Peers = peers
 }
 
 // FallBack fall back to the previous cluster configuration
 func (c *configs) FallBack() {
-	var config clusterConfig
-	c.buf[c.last] = config
-	c.last = 1 - c.last
+	c.last = c.prevIndex()
+}
+
+func (c *configs) nextIndex() int {
+	i := c.last + 1
+	if i == 3 {
+		i = 0
+	}
+	return i
+}
+
+func (c *configs) prevIndex() int {
+	i := c.last - 1
+	if i == -1 {
+		i = 2
+	}
+	return i
 }
 
 func (c *configs) Clone() configs {

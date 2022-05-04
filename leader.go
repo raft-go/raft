@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -28,6 +29,9 @@ type leader struct {
 
 	// cluster configuration commit cond
 	configCommitCond *sync.Cond
+
+	// whether or not step down
+	isStepDown int32
 }
 
 func (l *leader) Run() (server, error) {
@@ -51,6 +55,11 @@ func (l *leader) Run() (server, error) {
 				return server, nil
 			}
 		case <-l.ticker.C:
+			// if is step down, convert follower
+			if atomic.LoadInt32(&l.isStepDown) == 1 {
+				return l.toFollower(l.GetCurrentTerm())
+			}
+
 			// repeat during idle periods to
 			// prevent election timeouts (§5.2)
 			err := l.sendHeartbeats()
@@ -211,6 +220,7 @@ func (l *leader) replicate(ctx context.Context) error {
 // replicateTo replacate log entries to peer
 //
 // TODO: should control message size per replicate
+// TODO: accelerate consistency check
 func (l *leader) replicateTo(id RaftId, addr RaftAddr) (ok bool, err error) {
 	nextIndex, _ := l.nextIndex.Load(id)
 	prevLogIndex := nextIndex - 1
@@ -434,15 +444,82 @@ func (l *leader) AddServer(args AddServerArgs, results *AddServerResults) error 
 
 // RemoveServer
 // invoked by admin to remove a server to cluster configuration
-//
-// implementation:
-// 1. Reply NOT_LEADER if not leader(&6.2)
-// 2. Wait until previous configuration in log is committed(&4.1)
-// 3. Append new configuration entry to log(old configuration without oldServer),
-//	commit it using majority of new configuration (&4.1)
-// 4. Reply OK and, if this server was removed, step down(&4.2.2)
 func (l *leader) RemoveServer(args RemoveServerArgs, results *RemoveServerResults) error {
-	// TODO:
+	defer func() {
+		results.LeaderHints = l.addr
+	}()
+
+	if args.OldId.isNil() {
+		return ErrInvalidRaftId
+	}
+	// if last cluster configuration do not has this peer
+	peers := l.config.Peers()
+	if _, ok := peers.getById(args.OldId); !ok {
+		// if prev cluster configuration do not has this peer
+		if _, ok := l.config.PrevPeers().getById(args.OldId); !ok {
+			results.SetOK()
+			return nil
+		}
+
+		time.Sleep(l.electionTimeout[1])
+		// if has configuration change, it should has been committed
+		if l.GetCommitIndex() >= l.config.LogIndex() {
+			results.SetOK()
+			return nil
+		}
+		results.Status = "not ok, you can try again later"
+		return nil
+	}
+
+	// Wait until previous configuration in log is committed(&4.1)
+	l.configCommitCond.L.Lock()
+	for l.config.LogIndex() > l.GetCommitIndex() {
+		l.configCommitCond.Wait()
+	}
+	l.configCommitCond.L.Unlock()
+
+	// Append new configuration entry to log(old configuration without oldServer)
+	for i := range peers {
+		if peers[i].Id != args.OldId {
+			continue
+		}
+		peers[i], peers[len(peers)-1] = peers[len(peers)-1], peers[i]
+		peers = peers[:len(peers)-1]
+		break
+	}
+	index, err := l.Log.AppendEntry(LogEntry{
+		Term:    l.GetCurrentTerm(),
+		Type:    logEntryTypeClusterConfiguration,
+		Command: peers2Command(peers),
+	})
+	if err != nil {
+		return err
+	}
+	err = l.config.Use(index, peers)
+	if err != nil {
+		return err
+	}
+
+	// commit it using majority of new configuration(&4.1)
+	err = l.replicate(context.Background())
+	if err != nil {
+		return err
+	}
+	ok, err := l.refreshCommitIndex()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		// FIXME: this should not happen
+		results.Status = "not ok, this should not happen"
+	}
+	// Reply OK
+	results.SetOK()
+	// if this server was removed, step down(&4.2.2)
+	if args.OldId == l.Id() {
+		atomic.SwapInt32(&l.isStepDown, 1)
+	}
+
 	return nil
 }
 
