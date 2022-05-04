@@ -328,8 +328,14 @@ func (r *raft) applyCommitted() error {
 	if err != nil {
 		return err
 	}
-	// TODO: filter cluster configuration log entry
-	commands := newCommands(entries)
+	// command entries
+	commandEntries := make([]LogEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Type == logEntryTypeCommand {
+			commandEntries = append(commandEntries, entry)
+		}
+	}
+	commands := newCommands(commandEntries)
 
 	// apply
 	appliedCount, err := r.apply(commands)
@@ -338,8 +344,13 @@ func (r *raft) applyCommitted() error {
 	}
 
 	// update lastApplied
-	// FIXME: how to filter cluster configuration log entry count ?
-	lastApplied += uint64(appliedCount)
+	// add cluster configuration entries
+	for i := 0; i < appliedCount; {
+		lastApplied++
+		if entries[i].Type == logEntryTypeCommand {
+			i++
+		}
+	}
 	r.SetLastApplied(lastApplied)
 	return nil
 }

@@ -282,9 +282,6 @@ func (l *leader) replicateTo(id RaftId, addr RaftAddr) (ok bool, err error) {
 // of matchIndex[i] ≥ N, and log[N].term == currentTerm:
 // set commitIndex = N (§5.3, §5.4).
 func (l *leader) refreshCommitIndex() (bool, error) {
-	l.commitCond.L.Lock()
-	defer l.commitCond.L.Unlock()
-
 	// Raft never commits log entries from previous terms by count-
 	// ing replicas. Only log entries from the leader’s current
 	// term are committed by counting replicas; once an entry
@@ -364,11 +361,8 @@ func (l *leader) AddServer(args AddServerArgs, results *AddServerResults) error 
 		time.Sleep(l.electionTimeout[1])
 		// it should has been added
 		index := l.config.LogIndex()
-		lastLogIndex, _, err := l.Log.Last()
-		if err != nil {
-			return err
-		}
-		if lastLogIndex >= index {
+		commitIndex := l.GetCommitIndex()
+		if commitIndex >= index {
 			results.SetOK()
 			return nil
 		}
@@ -406,12 +400,11 @@ func (l *leader) AddServer(args AddServerArgs, results *AddServerResults) error 
 	// Append new configuration entry to log(old configuration plus newServer),
 	peers := l.config.Peers()
 	peers = append(peers, raftPeer{args.NewId, args.NewServer})
-	configEntry := LogEntry{
+	index, err := l.AppendEntry(LogEntry{
 		Term:    l.GetCurrentTerm(),
 		Type:    logEntryTypeClusterConfiguration,
 		Command: peers2Command(peers),
-	}
-	index, err := l.AppendEntry(configEntry)
+	})
 	if err != nil {
 		return err
 	}
@@ -425,11 +418,14 @@ func (l *leader) AddServer(args AddServerArgs, results *AddServerResults) error 
 	if err != nil {
 		return err
 	}
-	_, err = l.refreshCommitIndex()
+	ok, err = l.refreshCommitIndex()
 	if err != nil {
 		return err
 	}
-
+	if !ok {
+		// FIXME: this should not happen
+		results.Status = "not ok, this should not happen"
+	}
 	// Reply OK
 	results.SetOK()
 
