@@ -244,6 +244,17 @@ func (s *rpcService) AppendEntries(args AppendEntriesArgs, results *AppendEntrie
 		if err != nil {
 			return err
 		}
+		// Instead, each server adopts Cnew as soon as that entry exists in its
+		// log, and the leader knows it’s safe to allow further configuration
+		// changes as soon as the Cnew entry has been committed.
+		// Unfortunately, this decision does imply that a log entry for a configuration
+		// change can be removed (if leadership changes);
+		// in this case, a server must be prepared to fall back
+		// to the previous configuration in its log.
+		if s.config.LogIndex() > args.PrevLogIndex {
+			s.config.FallBack()
+		}
+
 		err = s.Append(args.Entries...)
 		if err != nil {
 			return err
