@@ -11,14 +11,14 @@ import (
 )
 
 func TestHandle(t *testing.T) {
-	peers := map[RaftId]RaftAddr{
-		"1": ":5010",
-		"2": ":5020",
-		"3": ":5030",
-		"4": ":5040",
-		"5": ":5050",
-		"6": ":5060",
-		"7": ":5070",
+	peers := []raftPeer{
+		{"1", ":5010"},
+		{"2", ":5020"},
+		{"3", ":5030"},
+		{"4", ":5040"},
+		{"5", ":5050"},
+		{"6", ":5060"},
+		{"7", ":5070"},
 	}
 	cluster := newCluster(t, peers)
 	go func() {
@@ -108,18 +108,20 @@ func TestHandle(t *testing.T) {
 	})
 }
 
-func newCluster(t *testing.T, peers map[RaftId]RaftAddr) *cluster {
+func newCluster(t *testing.T, peers []raftPeer) *cluster {
 	t.Helper()
 
 	var cluster = cluster{
 		t: t,
 	}
-	for id := range peers {
-		id := id
+	for i := range peers {
+		peer := peers[i]
 		agent := &agent{
 			t: t,
 		}
-		raft, err := New(id, agent.apply, &agent.store, &agent.log, peers)
+		raft, err := New(peer.Id, peer.Addr,
+			agent.apply, &agent.store, &agent.log,
+			cluster.WithOptFns(peer.Id, peer.Addr)...)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -134,6 +136,14 @@ func newCluster(t *testing.T, peers map[RaftId]RaftAddr) *cluster {
 type cluster struct {
 	t      *testing.T
 	agents []*agent
+	once   sync.Once
+}
+
+func (c *cluster) WithOptFns(id RaftId, addr RaftAddr) (optFns []OptFn) {
+	c.once.Do(func() {
+		optFns = append(optFns, WithBootstrapAsLeader())
+	})
+	return optFns
 }
 
 func (c *cluster) Handle(ctx context.Context, cmd ...Command) error {
@@ -147,6 +157,15 @@ func (c *cluster) Handle(ctx context.Context, cmd ...Command) error {
 	}
 
 	return errors.New("no leader")
+}
+
+func (c *cluster) getLeader() (Raft, bool) {
+	for i := range c.agents {
+		if c.agents[i].raft.IsLeader() {
+			return c.agents[i].raft, true
+		}
+	}
+	return nil, false
 }
 
 func (c *cluster) waitLeaderShip() {
@@ -174,6 +193,24 @@ func (c *cluster) Run() error {
 				once.Do(func() { errCh <- err })
 			}
 		}()
+	}
+	c.waitLeaderShip()
+
+	// join cluster
+	for i := 0; i < len(c.agents); i++ {
+		agent := c.agents[i]
+		leader, ok := c.getLeader()
+		if !ok {
+			panic("leader not exists")
+		}
+		if leader.Id() == agent.raft.Id() {
+			continue
+		}
+
+		err := leader.AddServer(agent.raft.Id(), agent.raft.Addr())
+		if err != nil {
+			panic(err)
+		}
 	}
 
 	return <-errCh

@@ -57,8 +57,8 @@ type server interface {
 	// 是否是 Leader
 	IsLeader() bool
 
-	// Invoked by admin to add a server to cluster configuration
-	AddServer(args AddServerArgs, results *AddServerResults) error
-	// Invoked by admin to remove a server from cluster configuration
-	RemoveServer(args RemoveServerArgs, results *RemoveServerResults) error
+	// add a server to cluster
+	AddServer(id RaftId, addr RaftAddr) error
+	// remove a server from cluster
+	RemoveServer(id RaftId) error
 }

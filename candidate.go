@@ -158,3 +158,15 @@ func (c *candidate) elect() (<-chan struct{}, error) {
 func (*candidate) IsLeader() bool {
 	return false
 }
+
+// AddServer
+// add a server to cluster
+func (*candidate) AddServer(id RaftId, addr RaftAddr) error {
+	return ErrNotLeader
+}
+
+// RemoveServer
+// remove a server from cluster
+func (*candidate) RemoveServer(id RaftId) error {
+	return ErrNotLeader
+}

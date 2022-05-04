@@ -355,17 +355,13 @@ var (
 
 // AddServer
 // Invoked by admin to add a server to cluster configuration
-func (l *leader) AddServer(args AddServerArgs, results *AddServerResults) error {
-	defer func() {
-		results.LeaderHints = l.addr
-	}()
-
-	if args.NewId.isNil() {
+func (l *leader) AddServer(id RaftId, addr RaftAddr) error {
+	if id.isNil() {
 		return ErrInvalidRaftId
 	}
-	peer, ok := l.config.Peers().getById(args.NewId)
+	peer, ok := l.config.Peers().getById(id)
 	if ok {
-		if peer.Addr != args.NewServer {
+		if peer.Addr != addr {
 			return ErrRaftIdHasBeenUsed
 		}
 		// wait for an election timout
@@ -374,11 +370,9 @@ func (l *leader) AddServer(args AddServerArgs, results *AddServerResults) error 
 		index := l.config.LogIndex()
 		commitIndex := l.GetCommitIndex()
 		if commitIndex >= index {
-			results.SetOK()
 			return nil
 		}
-		results.Status = "not ok, you can try again later"
-		return nil
+		return errors.New("try again later")
 	}
 
 	// Catch up new server for fixed number of rounds, Reply TIMEOUT
@@ -387,7 +381,7 @@ func (l *leader) AddServer(args AddServerArgs, results *AddServerResults) error 
 	const round = 10
 	for i := 1; i <= round; i++ {
 		start := time.Now()
-		ok, err := l.replicateTo(args.NewId, args.NewServer)
+		ok, err := l.replicateTo(id, addr)
 		if i != round {
 			continue
 		}
@@ -396,8 +390,7 @@ func (l *leader) AddServer(args AddServerArgs, results *AddServerResults) error 
 			return err
 		}
 		if !ok || time.Since(start) > l.electionTimeout[0] {
-			results.Status = "not ok, new server may bee too slow"
-			return nil
+			return errors.New("new server may bee too slow")
 		}
 	}
 
@@ -410,7 +403,7 @@ func (l *leader) AddServer(args AddServerArgs, results *AddServerResults) error 
 
 	// Append new configuration entry to log(old configuration plus newServer),
 	peers := l.config.Peers()
-	peers = append(peers, raftPeer{args.NewId, args.NewServer})
+	peers = append(peers, raftPeer{id, addr})
 	index, err := l.AppendEntry(LogEntry{
 		Term:    l.GetCurrentTerm(),
 		Type:    logEntryTypeClusterConfiguration,
@@ -435,41 +428,32 @@ func (l *leader) AddServer(args AddServerArgs, results *AddServerResults) error 
 	}
 	if !ok {
 		// FIXME: this should not happen
-		results.Status = "not ok, this should not happen"
+		return errors.New("internal error")
 	}
-	// Reply OK
-	results.SetOK()
 
 	return nil
 }
 
 // RemoveServer
 // invoked by admin to remove a server to cluster configuration
-func (l *leader) RemoveServer(args RemoveServerArgs, results *RemoveServerResults) error {
-	defer func() {
-		results.LeaderHints = l.addr
-	}()
-
-	if args.OldId.isNil() {
+func (l *leader) RemoveServer(id RaftId) error {
+	if id.isNil() {
 		return ErrInvalidRaftId
 	}
 	// if last cluster configuration do not has this peer
 	peers := l.config.Peers()
-	if _, ok := peers.getById(args.OldId); !ok {
+	if _, ok := peers.getById(id); !ok {
 		// if prev cluster configuration do not has this peer
-		if _, ok := l.config.PrevPeers().getById(args.OldId); !ok {
-			results.SetOK()
+		if _, ok := l.config.PrevPeers().getById(id); !ok {
 			return nil
 		}
 
 		time.Sleep(l.electionTimeout[1])
 		// if has configuration change, it should has been committed
 		if l.GetCommitIndex() >= l.config.LogIndex() {
-			results.SetOK()
 			return nil
 		}
-		results.Status = "not ok, you can try again later"
-		return nil
+		return errors.New("try again later")
 	}
 
 	// Wait until previous configuration in log is committed(&4.1)
@@ -481,7 +465,7 @@ func (l *leader) RemoveServer(args RemoveServerArgs, results *RemoveServerResult
 
 	// Append new configuration entry to log(old configuration without oldServer)
 	for i := range peers {
-		if peers[i].Id != args.OldId {
+		if peers[i].Id != id {
 			continue
 		}
 		peers[i], peers[len(peers)-1] = peers[len(peers)-1], peers[i]
@@ -512,12 +496,10 @@ func (l *leader) RemoveServer(args RemoveServerArgs, results *RemoveServerResult
 	}
 	if !ok {
 		// FIXME: this should not happen
-		results.Status = "not ok, this should not happen"
+		return errors.New("internal error")
 	}
-	// Reply OK
-	results.SetOK()
 	// if this server was removed, step down(&4.2.2)
-	if args.OldId == l.Id() {
+	if id == l.Id() {
 		atomic.SwapInt32(&l.isStepDown, 1)
 	}
 

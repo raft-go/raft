@@ -17,6 +17,35 @@ var (
 	ErrInvalidRaftId = errors.New("err: raft id is invalid")
 )
 
+// Raft raft 一致性模型
+type Raft interface {
+	// Id 获取 raft 一致性模型 id
+	Id() RaftId
+	// Addr 获取 raft 一致性模型 rpc 地址
+	Addr() RaftAddr
+
+	// Run 启动 raft 一致性模型
+	Run() error
+	// Stop 停止 raft 一致性模型
+	Stop()
+	// Done 是否已经停止
+	Done() <-chan struct{}
+
+	// Handle 处理 cmd
+	//
+	// append log entry --> log replication --> apply to state matchine
+	Handle(ctx context.Context, cmd ...Command) error
+	// IsLeader 是否是 Leader
+	IsLeader() bool
+
+	// AddServer
+	// add a server to cluster
+	AddServer(id RaftId, addr RaftAddr) error
+	// RemoveServer
+	// remove a server from cluster
+	RemoveServer(id RaftId) error
+}
+
 // New 实例化一个 raft 一致性模型
 func New(id RaftId, addr RaftAddr, apply Apply, store Store, log Log, optFns ...OptFn) (Raft, error) {
 	if id.isNil() {
@@ -63,26 +92,6 @@ func New(id RaftId, addr RaftAddr, apply Apply, store Store, log Log, optFns ...
 	}
 
 	return raft, nil
-}
-
-// Raft raft 一致性模型
-type Raft interface {
-	// Id 获取 raft 一致性模型 id
-	Id() RaftId
-
-	// Run 启动 raft 一致性模型
-	Run() error
-	// Stop 停止 raft 一致性模型
-	Stop()
-	// Done 是否已经停止
-	Done() <-chan struct{}
-
-	// Handle 处理 cmd
-	//
-	// append log entry --> log replication --> apply to state matchine
-	Handle(ctx context.Context, cmd ...Command) error
-	// IsLeader 是否是 Leader
-	IsLeader() bool
 }
 
 // RaftId raft 一致性模型 id
@@ -206,6 +215,10 @@ func (r *raft) runRPC() error {
 
 func (r *raft) Id() RaftId {
 	return r.id
+}
+
+func (r *raft) Addr() RaftAddr {
+	return r.addr
 }
 
 func (r *raft) Handle(ctx context.Context, cmd ...Command) error {
@@ -497,15 +510,15 @@ func (r *raft) who() string {
 }
 
 // AddServer
-func (r *raft) AddServer(args AddServerArgs, results *AddServerResults) error {
-	// Reply NOT_LEADER if not leader
-	return ErrNotLeader
+// add a server to cluster
+func (r *raft) AddServer(id RaftId, addr RaftAddr) error {
+	return r.GetServer().AddServer(id, addr)
 }
 
 // RemoveServer
-func (r *raft) RemoveServer(args RemoveServerArgs, results *RemoveServerResults) error {
-	// Reply NOT_LEADER if not leader
-	return ErrNotLeader
+// remove a server from cluster
+func (r *raft) RemoveServer(id RaftId) error {
+	return r.GetServer().RemoveServer(id)
 }
 
 // refreshLastHeartbeat

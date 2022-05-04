@@ -53,3 +53,15 @@ func (*follower) String() string {
 func (*follower) IsLeader() bool {
 	return false
 }
+
+// AddServer
+// add a server to cluster
+func (*follower) AddServer(id RaftId, addr RaftAddr) error {
+	return ErrNotLeader
+}
+
+// RemoveServer
+// remove a server from cluster
+func (*follower) RemoveServer(id RaftId) error {
+	return ErrNotLeader
+}
