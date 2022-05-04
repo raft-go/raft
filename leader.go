@@ -123,6 +123,7 @@ func (l *leader) sendHeartbeats() error {
 		go func() {
 			defer wg.Done()
 			if l.Id() == id {
+				l.refreshLastHeartbeat()
 				return
 			}
 			// empty args

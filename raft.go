@@ -126,6 +126,10 @@ type raft struct {
 	// electionTimeout
 	electionTimeout [2]time.Duration
 
+	// lastHeartbeat last heartbeat's unix time (the number of milliseconds)
+	// help to show leaders' activity
+	lastHeartbeat int64
+
 	// ticker heartbeat/election timer
 	ticker *time.Ticker
 
@@ -502,4 +506,25 @@ func (r *raft) AddServer(args AddServerArgs, results *AddServerResults) error {
 func (r *raft) RemoveServer(args RemoveServerArgs, results *RemoveServerResults) error {
 	// Reply NOT_LEADER if not leader
 	return ErrNotLeader
+}
+
+// refreshLastHeartbeat
+//
+// if a server receives a RequestVote
+// request within the minimum election timeout
+// of hearing from a current leader, it does not update its
+// term or grant its vote.
+func (r *raft) refreshLastHeartbeat() {
+	atomic.StoreInt64(&r.lastHeartbeat, time.Now().UnixMilli())
+}
+
+// isLeaderActive
+//
+// if a server receives a RequestVote
+// request within the minimum election timeout
+// of hearing from a current leader, it does not update its
+// term or grant its vote.
+func (r *raft) isLeaderActive() bool {
+	lastHeartbeatTime := time.UnixMilli(atomic.LoadInt64(&r.lastHeartbeat))
+	return time.Since(lastHeartbeatTime) < r.electionTimeout[0]
 }

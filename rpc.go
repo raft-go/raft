@@ -215,6 +215,7 @@ type rpcService struct {
 // 	4. Append any new entries not already in the log
 // 	5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 func (s *rpcService) AppendEntries(args AppendEntriesArgs, results *AppendEntriesResults) error {
+	s.refreshLastHeartbeat()
 	s.raft.sendRPCArgs(args)
 	s.GetServer().ResetTimer()
 	defer func() {
@@ -281,6 +282,9 @@ func (s *rpcService) AppendEntries(args AppendEntriesArgs, results *AppendEntrie
 // 	4. Append any new entries not already in the log
 // 	5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 func (s *rpcService) RequestVote(args RequestVoteArgs, results *RequestVoteResults) error {
+	if s.isLeaderActive() {
+		return nil
+	}
 	// 加锁, 防止两个 term 相同
 	// 且比 currentTerm 大的节点同时获得投票
 	s.mu.Lock()
