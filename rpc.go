@@ -198,7 +198,7 @@ func (s *rpcService) AppendEntries(args AppendEntriesArgs, results *AppendEntrie
 	// 		but different terms), delete the existing entry and all that follow it (§5.3)
 	// 	4. Append any new entries not already in the log
 	if len(args.Entries) > 0 {
-		err = s.PopAfter(args.PrevLogIndex)
+		err = s.AppendAt(args.PrevLogIndex, args.Entries...)
 		if err != nil {
 			return err
 		}
@@ -212,10 +212,16 @@ func (s *rpcService) AppendEntries(args AppendEntriesArgs, results *AppendEntrie
 		if s.config.LogIndex() > args.PrevLogIndex {
 			s.config.FallBack()
 		}
-
-		err = s.Append(args.Entries...)
-		if err != nil {
-			return err
+		for i := range args.Entries {
+			entry := args.Entries[i]
+			if entry.Type != logEntryTypeClusterConfiguration {
+				continue
+			}
+			peers, err := command2Peers(entry.Command)
+			if err != nil {
+				panic(err)
+			}
+			s.raft.config.Use(entry.Index, peers)
 		}
 	}
 	// 	5. If leaderCommit > commitIndex,

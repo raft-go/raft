@@ -184,20 +184,6 @@ func TestLog(t *testing.T) {
 				}
 			}
 		})
-		t.Run("PopAfter", func(t *testing.T) {
-			err := log.PopAfter(0)
-			if err != nil {
-				t.Fatal(err)
-			}
-			got, err := log.RangeGet(0, uint64(len(entries)))
-			if err != nil {
-				t.Fatal(err)
-			}
-			expect := 0
-			if len(got) != expect {
-				t.Errorf("expect %d but got %d", expect, len(got))
-			}
-		})
 	})
 
 }

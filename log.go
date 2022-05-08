@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"errors"
 	"sync"
 	"time"
 )
@@ -18,10 +19,10 @@ type Log interface {
 	// RangeGet 获取在 (i, j] 索引区间的 log entry
 	// 若无, 则返回 nil, nil
 	RangeGet(i, j uint64) ([]LogEntry, error)
-	// PopAfter 删除索引 i 之后的所有 log entry
-	PopAfter(i uint64) error
 	// Append 追加 log entry
 	Append(entries ...LogEntry) error
+	// AppendAt 在 prevIndex 之后追加 log entry
+	AppendAt(prevIndex uint64, entries ...LogEntry) error
 	// AppendEntry append entry and return entry index
 	AppendEntry(entry LogEntry) (index uint64, err error)
 }
@@ -124,13 +125,12 @@ func (l *memoryLog) RangeGet(i, j uint64) ([]LogEntry, error) {
 	return entries, nil
 }
 
-// PopAfter 删除索引 i 之后的所有 log entry
-func (l *memoryLog) PopAfter(i uint64) error {
-	l.mux.Lock()
-	defer l.mux.Unlock()
-
-	if i >= uint64(len(l.queue)) {
+func (l *memoryLog) popAfter(i uint64) error {
+	if i == uint64(len(l.queue)) {
 		return nil
+	}
+	if i > uint64(len(l.queue)) {
+		return errors.New("index out of log's range")
 	}
 	l.queue = l.queue[:i]
 	return nil
@@ -141,6 +141,9 @@ func (l *memoryLog) Append(entries ...LogEntry) error {
 	l.mux.Lock()
 	defer l.mux.Unlock()
 
+	return l.append(entries...)
+}
+func (l *memoryLog) append(entries ...LogEntry) error {
 	start, _, err := l.last()
 	if err != nil {
 		return err
@@ -151,6 +154,17 @@ func (l *memoryLog) Append(entries ...LogEntry) error {
 	}
 	l.queue = append(l.queue, entries...)
 	return nil
+}
+
+func (l *memoryLog) AppendAt(prevIndex uint64, entries ...LogEntry) error {
+	l.mux.Lock()
+	defer l.mux.Unlock()
+
+	err := l.popAfter(prevIndex)
+	if err != nil {
+		return err
+	}
+	return l.append(entries...)
 }
 
 // AppendEntry append log entry and return log entry index

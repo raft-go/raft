@@ -25,6 +25,7 @@ func (f *follower) Run() (server, error) {
 		case <-f.ticker.C:
 			// if not in Cnew steps down
 			if _, ok := f.config.Peers().getById(f.Id()); !ok {
+				f.debug("Keep follower state")
 				continue
 			}
 

@@ -21,15 +21,13 @@ func TestHandle(t *testing.T) {
 		{"7", ":5070"},
 	}
 	cluster := newCluster(t, peers)
-	go func() {
-		err := cluster.Run()
-		if err != nil {
-			t.Error(err)
-		}
-	}()
-	cluster.waitLeaderShip()
+	err := cluster.start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cluster.Stop()
 
-	const n = 5000
+	const n = 500 * 100
 	commands := make([]Command, 0, n)
 	for i := 0; i < n; i++ {
 		commands = append(commands, Command(fmt.Sprintf("command %d", i)))
@@ -42,42 +40,7 @@ func TestHandle(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-
-	t.Run("check: append log entry", func(t *testing.T) {
-		var count int
-		for i := range cluster.agents {
-			agent := cluster.agents[i]
-			entries, err := agent.log.RangeGet(0, uint64(len(commands)))
-			if err != nil {
-				t.Error(err)
-			}
-
-			if len(entries) > len(commands) {
-				t.Errorf("expect <= %d, got > %d", len(commands), len(commands))
-			}
-			if len(entries) == 0 {
-				continue
-			}
-
-			for i := uint64(0); i < uint64(len(entries)); i++ {
-				command := commands[i]
-				if got := entries[i].Index; got != i+1 {
-					t.Errorf("expect entry index %d, got %d", i+1, got)
-				}
-				if got := entries[i].Command; bytes.Compare(got, command) != 0 {
-					t.Errorf("expect entry command: %q, got: %q", command, got)
-				}
-			}
-
-			if len(entries) == len(commands) {
-				count++
-			}
-		}
-		if len(commands) > 0 && count <= len(cluster.agents)/2 {
-			t.Errorf("expect majority raft node append command, but only %d/%d", count, len(cluster.agents))
-		}
-		t.Logf("append log entries to %d/%d raft node", count, len(cluster.agents))
-	})
+	time.Sleep(100 * time.Millisecond)
 
 	t.Run("check: apply to state machine", func(t *testing.T) {
 		var count int
@@ -180,17 +143,18 @@ func (c *cluster) waitLeaderShip() {
 	}
 }
 
-func (c *cluster) Run() error {
+func (c *cluster) start() error {
 	c.t.Helper()
 
-	errCh := make(chan error, 1)
-	var once sync.Once
 	for i := range c.agents {
 		agent := c.agents[i]
 		go func() {
 			err := agent.Run()
+			if errors.Is(err, ErrStopped) {
+				return
+			}
 			if err != nil {
-				once.Do(func() { errCh <- err })
+				c.t.Error(err)
 			}
 		}()
 	}
@@ -212,8 +176,7 @@ func (c *cluster) Run() error {
 			panic(err)
 		}
 	}
-
-	return <-errCh
+	return nil
 }
 
 func (c *cluster) Stop() {

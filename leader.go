@@ -128,8 +128,10 @@ func (l *leader) sendHeartbeats() error {
 			}
 			// empty args
 			var args = AppendEntriesArgs{
-				Term:     l.GetCurrentTerm(),
-				LeaderId: l.Id(),
+				Term:         l.GetCurrentTerm(),
+				LeaderId:     l.Id(),
+				Entries:      nil,
+				LeaderCommit: l.GetCommitIndex(),
 			}
 			l.rpc.CallAppendEntries(addr, args)
 		}()
@@ -156,6 +158,9 @@ func (*leader) String() string {
 // replicate
 // replicate log entries
 func (l *leader) replicate(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	peers := l.config.Peers()
 	replicateCh := make(chan struct{}, len(peers))
 
@@ -223,7 +228,11 @@ func (l *leader) replicate(ctx context.Context) error {
 // TODO: should control message size per replicate
 // TODO: accelerate consistency check
 func (l *leader) replicateTo(id RaftId, addr RaftAddr) (ok bool, err error) {
-	nextIndex, _ := l.nextIndex.Load(id)
+	nextIndex, ok := l.nextIndex.Load(id)
+	// replicate to non-voting server
+	if !ok {
+		nextIndex = 1
+	}
 	prevLogIndex := nextIndex - 1
 	prevLogTerm, err := l.Get(prevLogIndex)
 	if err != nil {
@@ -315,7 +324,11 @@ func (l *leader) refreshCommitIndex() (bool, error) {
 	// of matchIndex[i] ≥ N, and log[N].term == currentTerm:
 	// set commitIndex = N (§5.3, §5.4).
 	var matchIndex []uint64
-	l.matchIndex.Range(func(_ RaftId, index uint64) bool {
+	peers := l.config.Peers()
+	l.matchIndex.Range(func(id RaftId, index uint64) bool {
+		if _, ok := peers.getById(id); !ok {
+			return true
+		}
 		matchIndex = append(matchIndex, index)
 		return true
 	})
@@ -324,9 +337,14 @@ func (l *leader) refreshCommitIndex() (bool, error) {
 	mid := (len(matchIndex) - 1) / 2
 	nextCommitIndex := matchIndex[mid]
 
-	if nextCommitIndex <= commitIndex {
+	if nextCommitIndex < commitIndex {
 		return false, nil
 	}
+	// when refresh commitIndex concurrently, this happens
+	if nextCommitIndex == commitIndex {
+		return true, nil
+	}
+
 	nextTerm, err := l.Get(nextCommitIndex)
 	if err != nil {
 		return false, err
@@ -354,8 +372,9 @@ var (
 )
 
 // AddServer
-// Invoked by admin to add a server to cluster configuration
+// add a server to cluster configuration
 func (l *leader) AddServer(id RaftId, addr RaftAddr) error {
+	newPeer := raftPeer{id, addr}
 	if id.isNil() {
 		return ErrInvalidRaftId
 	}
@@ -382,24 +401,29 @@ func (l *leader) AddServer(id RaftId, addr RaftAddr) error {
 	for i := 1; i <= round; i++ {
 		start := time.Now()
 		ok, err := l.replicateTo(id, addr)
-		if i != round {
+		if err != nil {
+			if i == round {
+				return err
+			}
 			continue
 		}
 
-		if err != nil {
-			return err
+		elapsed := time.Since(start)
+		if ok && elapsed < l.electionTimeout[0] {
+			break
 		}
-		if !ok || time.Since(start) > l.electionTimeout[0] {
-			return errors.New("new server may bee too slow")
+		if i != round {
+			continue
 		}
+		return errors.New("new server may bee too slow")
 	}
 
 	// Wait until previous configuration in log is committed(&4.1)
 	l.configCommitCond.L.Lock()
+	defer l.configCommitCond.L.Unlock()
 	for l.config.LogIndex() > l.GetCommitIndex() {
 		l.configCommitCond.Wait()
 	}
-	l.configCommitCond.L.Unlock()
 
 	// Append new configuration entry to log(old configuration plus newServer),
 	peers := l.config.Peers()
@@ -430,47 +454,43 @@ func (l *leader) AddServer(id RaftId, addr RaftAddr) error {
 		// FIXME: this should not happen
 		return errors.New("internal error")
 	}
+	l.debug("+ %s successfully", newPeer)
 
 	return nil
 }
 
 // RemoveServer
-// invoked by admin to remove a server to cluster configuration
+// remove a server from cluster configuration
 func (l *leader) RemoveServer(id RaftId) error {
 	if id.isNil() {
 		return ErrInvalidRaftId
 	}
 	// if last cluster configuration do not has this peer
 	peers := l.config.Peers()
-	if _, ok := peers.getById(id); !ok {
+	_, ok := peers.getById(id)
+	if !ok {
 		// if prev cluster configuration do not has this peer
 		if _, ok := l.config.PrevPeers().getById(id); !ok {
 			return nil
 		}
-
-		time.Sleep(l.electionTimeout[1])
-		// if has configuration change, it should has been committed
-		if l.GetCommitIndex() >= l.config.LogIndex() {
-			return nil
-		}
-		return errors.New("try again later")
 	}
 
 	// Wait until previous configuration in log is committed(&4.1)
 	l.configCommitCond.L.Lock()
+	defer l.configCommitCond.L.Unlock()
 	for l.config.LogIndex() > l.GetCommitIndex() {
+		l.debug("Server %s wait config commit event", id)
 		l.configCommitCond.Wait()
 	}
-	l.configCommitCond.L.Unlock()
+	l.debug("Server %s will be removed", id)
 
 	// Append new configuration entry to log(old configuration without oldServer)
-	for i := range peers {
+	for i := 0; i < len(peers); i++ {
 		if peers[i].Id != id {
 			continue
 		}
 		peers[i], peers[len(peers)-1] = peers[len(peers)-1], peers[i]
 		peers = peers[:len(peers)-1]
-		break
 	}
 	index, err := l.Log.AppendEntry(LogEntry{
 		Term:    l.GetCurrentTerm(),
@@ -490,18 +510,29 @@ func (l *leader) RemoveServer(id RaftId) error {
 	if err != nil {
 		return err
 	}
-	ok, err := l.refreshCommitIndex()
+	ok, err = l.refreshCommitIndex()
 	if err != nil {
 		return err
 	}
-	if !ok {
+	if l.GetCommitIndex() < index {
 		// FIXME: this should not happen
 		return errors.New("internal error")
 	}
+
+	// broadcast commitIndex by heartbeats
+	// help future leader to commit this cluster configuration change
+	// to avoid future cluster configuration change pending
+	// FIXME: refactor to use no-op log entry
+	err = l.sendHeartbeats()
+	if err != nil {
+		return err
+	}
+
 	// if this server was removed, step down(&4.2.2)
 	if id == l.Id() {
 		atomic.SwapInt32(&l.isStepDown, 1)
 	}
+	l.debug("- %s successfully", id)
 
 	return nil
 }

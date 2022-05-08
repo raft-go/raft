@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"net"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -148,7 +149,8 @@ type raft struct {
 	ran int32
 
 	// 表示一致性模型是否已停用
-	done chan struct{}
+	done    chan struct{}
+	stopped int32
 }
 
 func (r *raft) init() (err error) {
@@ -177,12 +179,11 @@ func (r *raft) init() (err error) {
 			peers := []raftPeer{
 				{Id: r.Id(), Addr: r.addr},
 			}
-			configEntry := LogEntry{
+			index, err := r.Log.AppendEntry(LogEntry{
 				Term:    r.GetCurrentTerm(),
 				Type:    logEntryTypeClusterConfiguration,
 				Command: peers2Command(peers),
-			}
-			index, err := r.Log.AppendEntry(configEntry)
+			})
 			if err != nil {
 				return err
 			}
@@ -191,6 +192,7 @@ func (r *raft) init() (err error) {
 				return err
 			}
 			r.SetCommitIndex(index)
+			r.debug("Will bootstrap as leader")
 		}
 	}
 
@@ -239,6 +241,9 @@ func (r *raft) Run() (err error) {
 
 	go func() {
 		err := r.runRPC()
+		if errors.Is(err, net.ErrClosed) {
+			return
+		}
 		if err != nil {
 			r.debug("run rpc, err: %+v", err)
 			os.Exit(1)
@@ -264,6 +269,10 @@ func (r *raft) Run() (err error) {
 }
 
 func (r *raft) Stop() {
+	if atomic.SwapInt32(&r.stopped, 1) == 1 {
+		return
+	}
+
 	close(r.done)
 	if r.ticker != nil {
 		r.ticker.Stop()
@@ -352,6 +361,9 @@ func (r *raft) applyCommitted() error {
 			commandEntries = append(commandEntries, entry)
 		}
 	}
+	if len(commandEntries) == 0 {
+		return nil
+	}
 	commands := newCommands(commandEntries)
 
 	// apply
@@ -362,10 +374,15 @@ func (r *raft) applyCommitted() error {
 
 	// update lastApplied
 	// add cluster configuration entries
-	for i := 0; i < appliedCount; {
+	counter := appliedCount
+	for i := range entries {
+		entry := entries[i]
 		lastApplied++
-		if entries[i].Type == logEntryTypeCommand {
-			i++
+		if entry.Type == logEntryTypeCommand {
+			counter--
+		}
+		if counter == 0 {
+			break
 		}
 	}
 	r.SetLastApplied(lastApplied)
@@ -393,7 +410,7 @@ func (r *raft) sendRPCArgs(args rpcArgs) {
 // 		set currentTerm = T, convert to follower (§5.1)
 func (r *raft) reactToRPCArgs(args rpcArgs) (server server, converted bool, err error) {
 	if args.getTerm() > r.GetCurrentTerm() {
-		r.debug("React to args(term: %d, type: %q)",
+		r.debug("React to args (term: %d, type: %q)",
 			args.getTerm(), args.getType())
 		server, err = r.toFollower(args.getTerm())
 		if err != nil {
@@ -506,7 +523,8 @@ func (r *raft) who() string {
 		state += " "
 	}
 
-	return fmt.Sprintf("[%s:%d:%d:%d:%s]", r.Id(), r.GetCurrentTerm(), r.GetCommitIndex(), r.GetLastApplied(), state)
+	return fmt.Sprintf("[%s:%d:%d:%d:%d:%s]", r.Id(), r.GetCurrentTerm(),
+		len(r.config.Peers()), r.GetCommitIndex(), r.GetLastApplied(), state)
 }
 
 // AddServer

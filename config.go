@@ -2,6 +2,7 @@ package raft
 
 import (
 	"encoding/json"
+	"fmt"
 	"sync"
 )
 
@@ -215,4 +216,8 @@ func command2Peers(command Command) (peers []raftPeer, err error) {
 type raftPeer struct {
 	Id   RaftId
 	Addr RaftAddr
+}
+
+func (p raftPeer) String() string {
+	return fmt.Sprintf("(%s, %s)", p.Id, p.Addr)
 }

@@ -1,5 +1,7 @@
 package raft
 
+import "bytes"
+
 // Command 一致性模型需要提交, 状态机需要处理的命令
 type Command []byte
 
@@ -30,4 +32,15 @@ type commands struct {
 
 func (c *commands) Data() []Command {
 	return c.data
+}
+
+func (c *commands) String() string {
+	var b bytes.Buffer
+	for i := range c.data {
+		if i != 0 {
+			b.Write([]byte(", "))
+		}
+		b.Write(c.data[i])
+	}
+	return b.String()
 }
