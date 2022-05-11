@@ -56,4 +56,8 @@ type server interface {
 	ResetTimer()
 	// 是否是 Leader
 	IsLeader() bool
+	// AddPeers add peers to cluster
+	AddPeers(peers []RaftPeer) error
+	// RemovePeers remove peers from cluster
+	RemovePeers(peers []RaftPeer) error
 }

@@ -48,3 +48,13 @@ func (*follower) String() string {
 func (*follower) IsLeader() bool {
 	return false
 }
+
+// AddPeers add peers to cluster
+func (*follower) AddPeers(peers []RaftPeer) error {
+	return ErrIsNotLeader
+}
+
+// RemovePeers remove peers from cluster
+func (*follower) RemovePeers(peers []RaftPeer) error {
+	return ErrIsNotLeader
+}

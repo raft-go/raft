@@ -155,3 +155,13 @@ func (c *candidate) elect() (<-chan struct{}, error) {
 func (*candidate) IsLeader() bool {
 	return false
 }
+
+// AddPeers add peers to cluster
+func (*candidate) AddPeers(peers []RaftPeer) error {
+	return ErrIsNotLeader
+}
+
+// RemovePeers remove peers from cluster
+func (*candidate) RemovePeers(peers []RaftPeer) error {
+	return ErrIsNotLeader
+}

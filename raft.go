@@ -63,6 +63,8 @@ func New(id RaftId, apply Apply, store Store, log Log, peers map[RaftId]RaftAddr
 type Raft interface {
 	// Id 获取 raft 一致性模型 id
 	Id() RaftId
+	// Addr 获取 raft 一致性模型 rpc addr
+	Addr() RaftAddr
 
 	// Run 启动 raft 一致性模型
 	Run() error
@@ -77,6 +79,11 @@ type Raft interface {
 	Handle(ctx context.Context, cmd ...Command) error
 	// IsLeader 是否是 Leader
 	IsLeader() bool
+
+	// AddPeers add peers to cluster
+	AddPeers(peers []RaftPeer) error
+	// RemovePeers remove peers from cluster
+	RemovePeers(peers []RaftPeer) error
 }
 
 // RaftId raft 一致性模型 id
@@ -159,6 +166,10 @@ func (r *raft) runRPC() error {
 
 func (r *raft) Id() RaftId {
 	return r.id
+}
+
+func (r *raft) Addr() RaftAddr {
+	return r.addr
 }
 
 func (r *raft) Handle(ctx context.Context, cmd ...Command) error {
@@ -431,4 +442,14 @@ func (r *raft) who() string {
 	}
 
 	return fmt.Sprintf("[%s:%d:%d:%d:%s]", r.Id(), r.GetCurrentTerm(), r.GetCommitIndex(), r.GetLastApplied(), state)
+}
+
+// AddPeers add peers to cluster
+func (r *raft) AddPeers(peers []RaftPeer) error {
+	return r.GetServer().AddPeers(peers)
+}
+
+// RemovePeers remove peers from cluster
+func (r *raft) RemovePeers(peers []RaftPeer) error {
+	return r.GetServer().RemovePeers(peers)
 }

@@ -354,3 +354,15 @@ type uint64Slice []uint64
 func (x uint64Slice) Len() int           { return len(x) }
 func (x uint64Slice) Less(i, j int) bool { return x[i] < x[j] }
 func (x uint64Slice) Swap(i, j int)      { x[i], x[j] = x[j], x[i] }
+
+// AddPeers add peers to cluster
+func (l *leader) AddPeers(peers []RaftPeer) error {
+	// TODO:
+	return nil
+}
+
+// RemovePeers remove peers from cluster
+func (l *leader) RemovePeers(peers []RaftPeer) error {
+	// TODO:
+	return nil
+}
