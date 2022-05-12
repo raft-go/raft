@@ -4,6 +4,8 @@ import (
 	"context"
 	"sort"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 var _ server = (*leader)(nil)
@@ -23,12 +25,15 @@ type leader struct {
 
 	// once resetTimer
 	once sync.Once
+
+	// noop for send no-op entry just once
+	noop int32
 }
 
 func (l *leader) Run() (server, error) {
-	// Upon election: send initial empty AppendEntries RPC
-	// (heartbeat) to each server
-	err := l.sendHeartbeats()
+	// Upon election: Instead of sendding initial empty AppendEntries RPC
+	// (heartbeat) to each server, broadcasting no-op log entry
+	err := l.replicateNoop()
 	if err != nil {
 		return nil, err
 	}
@@ -94,6 +99,38 @@ func (l *leader) Handle(ctx context.Context, cmd ...Command) error {
 	}
 
 	return l.applyCommitted()
+}
+
+// replicateNoop broadcast no-op log entry
+//
+// 1. Pledge of leadership
+// 2. Ensure that the  cluster configuration of pre term is broadcast as soon as possible
+func (l *leader) replicateNoop() error {
+	if atomic.SwapInt32(&l.noop, 1) != 0 {
+		return nil
+	}
+	entry := LogEntry{
+		Term:       l.GetCurrentTerm(),
+		Type:       logEntryTypeNoop,
+		AppendTime: time.Now(),
+	}
+	err := l.Log.Append(entry)
+	if err != nil {
+		return err
+	}
+	err = l.replicate(context.Background())
+	if err != nil {
+		return err
+	}
+	ok, err := l.refreshCommitIndex()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		// FIXME:
+		return nil
+	}
+	return nil
 }
 
 func (l *leader) sendHeartbeats() error {

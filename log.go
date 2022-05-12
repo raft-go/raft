@@ -1,6 +1,8 @@
 package raft
 
 import (
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -18,11 +20,18 @@ type Log interface {
 	// RangeGet 获取在 (i, j] 索引区间的 log entry
 	// 若无, 则返回 nil, nil
 	RangeGet(i, j uint64) ([]LogEntry, error)
-	// PopAfter 删除索引 i 之后的所有 log entry
-	PopAfter(i uint64) error
-	// Append 追加 log entry
+	// AppendAfter 在afterIndex之后追加 log entry
+	AppendAfter(afterIndex uint64, entries ...LogEntry) error
+	// Append 追加log entry
 	Append(entries ...LogEntry) error
 }
+
+type LogEntryType uint8
+
+const (
+	logEntryTypeCommand LogEntryType = iota
+	logEntryTypeNoop
+)
 
 // LogEntry raft log entry
 //	each entry contains command for state machine,
@@ -30,6 +39,7 @@ type Log interface {
 type LogEntry struct {
 	Index      uint64
 	Term       uint64
+	Type       LogEntryType
 	Command    Command
 	AppendTime time.Time
 }
@@ -78,6 +88,10 @@ func (l *memoryLog) Last() (index, term uint64, err error) {
 	l.mux.Lock()
 	defer l.mux.Unlock()
 
+	return l.last()
+}
+
+func (l *memoryLog) last() (index, term uint64, err error) {
 	if len(l.queue) == 0 {
 		return 0, 0, nil
 	}
@@ -105,30 +119,39 @@ func (l *memoryLog) RangeGet(i, j uint64) ([]LogEntry, error) {
 	return entries, nil
 }
 
-// PopAfter 删除索引 i 之后的所有 log entry
-func (l *memoryLog) PopAfter(i uint64) error {
+// AppendAfter 追加 log entry
+func (l *memoryLog) AppendAfter(afterIndex uint64, entries ...LogEntry) error {
 	l.mux.Lock()
 	defer l.mux.Unlock()
 
-	if i >= uint64(len(l.queue)) {
-		return nil
+	// pop after
+	if afterIndex >= uint64(len(l.queue)) {
+		msg := fmt.Sprintf("afterIndex(%d) out of range", afterIndex)
+		return errors.New(msg)
 	}
-	l.queue = l.queue[:i]
+	l.queue = l.queue[:afterIndex]
+
+	// append
+	start := afterIndex + 1
+	for i := range entries {
+		entries[i].Index = start + uint64(i)
+	}
+	l.queue = append(l.queue, entries...)
 	return nil
 }
 
-// Append 追加 log entry
+// Append 追加log entry
 func (l *memoryLog) Append(entries ...LogEntry) error {
-	start, _, err := l.Last()
-	if err != nil {
-		return err
-	}
-
 	l.mux.Lock()
 	defer l.mux.Unlock()
 
+	last, _, err := l.last()
+	if err != nil {
+		return err
+	}
+	start := last + 1
 	for i := range entries {
-		entries[i].Index = start + uint64(i) + 1
+		entries[i].Index = start + uint64(i)
 	}
 	l.queue = append(l.queue, entries...)
 	return nil

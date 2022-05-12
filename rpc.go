@@ -194,11 +194,7 @@ func (s *rpcService) AppendEntries(args AppendEntriesArgs, results *AppendEntrie
 	// 		but different terms), delete the existing entry and all that follow it (§5.3)
 	// 	4. Append any new entries not already in the log
 	if len(args.Entries) > 0 {
-		err = s.PopAfter(args.PrevLogIndex)
-		if err != nil {
-			return err
-		}
-		err = s.Append(args.Entries...)
+		err = s.raft.Log.AppendAfter(args.PrevLogIndex, args.Entries...)
 		if err != nil {
 			return err
 		}

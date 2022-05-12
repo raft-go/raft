@@ -301,7 +301,18 @@ func (r *raft) applyCommitted() error {
 	if err != nil {
 		return err
 	}
-	commands := newCommands(entries)
+
+	// apply command type log entries
+	var commandEntries []LogEntry
+	for i := range entries {
+		if entries[i].Type == logEntryTypeCommand {
+			commandEntries = append(commandEntries, entries[i])
+		}
+	}
+	if len(commandEntries) == 0 {
+		return nil
+	}
+	commands := newCommands(commandEntries)
 
 	// apply
 	appliedCount, err := r.apply(commands)
@@ -310,8 +321,17 @@ func (r *raft) applyCommitted() error {
 	}
 
 	// update lastApplied
-	lastApplied += uint64(appliedCount)
-	r.SetLastApplied(lastApplied)
+	var count uint64
+	for _, entry := range entries {
+		if entry.Type == logEntryTypeCommand {
+			appliedCount--
+		}
+		count++
+		if appliedCount == 0 {
+			break
+		}
+	}
+	r.SetLastApplied(lastApplied + count)
 	return nil
 }
 
