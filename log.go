@@ -124,8 +124,12 @@ func (l *memoryLog) AppendAfter(afterIndex uint64, entries ...LogEntry) error {
 	l.mux.Lock()
 	defer l.mux.Unlock()
 
+	if afterIndex == uint64(len(l.queue)) {
+		return nil
+	}
+
 	// pop after
-	if afterIndex >= uint64(len(l.queue)) {
+	if afterIndex > uint64(len(l.queue)) {
 		msg := fmt.Sprintf("afterIndex(%d) out of range", afterIndex)
 		return errors.New(msg)
 	}
