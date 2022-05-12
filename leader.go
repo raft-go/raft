@@ -417,7 +417,7 @@ func (l *leader) AddPeers(ctx context.Context, peers []RaftPeer) error {
 	}
 
 	// non-voting phase
-	err := l.addNonVoting(ctx, peers)
+	err := l.tryCatchupLeader(ctx, peers)
 	if err != nil {
 		return err
 	}
@@ -429,13 +429,13 @@ func (l *leader) AddPeers(ctx context.Context, peers []RaftPeer) error {
 	return nil
 }
 
-// addNonVoting catch up leader's log entries
+// tryCatchupLeader catch up leader's log entries
 //
 // In order to avoid availability gaps, Raft introduces an additional phase before the configuration
 // change, in which a new server joins the cluster as a non-voting member. The leader replicates
 // log entries to it, but it is not yet counted towards majorities for voting or commitment purposes.
 // Once the new server has caught up with the rest of the cluster, the reconfiguration can proceed
-func (l *leader) addNonVoting(ctx context.Context, peers []RaftPeer) error {
+func (l *leader) tryCatchupLeader(ctx context.Context, peers []RaftPeer) error {
 	errCh := make(chan error, len(peers))
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -488,12 +488,7 @@ func (l *leader) addNonVoting(ctx context.Context, peers []RaftPeer) error {
 		}
 		wg.Wait()
 	}()
-	err := <-errCh
-	if err != nil {
-		cancel()
-		return err
-	}
-	return nil
+	return <-errCh
 }
 
 // RemovePeers remove peers from cluster
