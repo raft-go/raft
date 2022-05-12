@@ -28,6 +28,11 @@ func New(id RaftId, apply Apply, store Store, log Log, peers map[RaftId]RaftAddr
 		return nil, err
 	}
 
+	configs, err := newConfigManager(store)
+	if err != nil {
+		return nil, err
+	}
+
 	raft := &raft{
 		id: id,
 
@@ -44,7 +49,7 @@ func New(id RaftId, apply Apply, store Store, log Log, peers map[RaftId]RaftAddr
 		commitCond: sync.NewCond(&sync.Mutex{}),
 		rpcArgs:    make(chan rpcArgs),
 
-		peers:           peers,
+		configs:         configs,
 		electionTimeout: opts.election,
 
 		logger: opts.logger,
@@ -120,8 +125,8 @@ type raft struct {
 	// set currentTerm = T, convert to follower (§5.1)
 	rpcArgs chan rpcArgs
 
-	// peers raft 节点
-	peers map[RaftId]RaftAddr
+	// cluster configuration
+	configs configManager
 	// electionTimeout
 	electionTimeout [2]time.Duration
 
@@ -402,9 +407,11 @@ func (r *raft) toLeader() (server, error) {
 	if err != nil {
 		return nil, err
 	}
-	for raftId := range server.peers {
-		server.nextIndex.Store(raftId, lastLogIndex+1)
-		server.matchIndex.Store(raftId, 0)
+
+	peers := peersList2Peers(r.configs.GetPeersList())
+	for _, peer := range peers {
+		server.nextIndex.Store(peer.Id, lastLogIndex+1)
+		server.matchIndex.Store(peer.Id, 0)
 	}
 
 	server.ResetTimer()

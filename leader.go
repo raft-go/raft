@@ -101,8 +101,8 @@ func (l *leader) sendHeartbeats() error {
 	// heartbeats (AppendEntries RPCs that carry no log entries)
 	// to all followers in order to maintain their authority.
 	var wg sync.WaitGroup
-	for _, addr := range l.peers {
-		addr := addr
+	for _, peer := range peersList2Peers(l.raft.configs.GetPeersList()) {
+		addr := peer.Addr
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -136,13 +136,15 @@ func (*leader) String() string {
 // replicate
 // replicate log entries
 func (l *leader) replicate(ctx context.Context) error {
-	replicateCh := make(chan struct{}, len(l.peers))
+	peersList := l.raft.configs.GetPeersList()
+	peers := peersList2Peers(peersList)
+	replicateCh := make(chan RaftId, len(peers))
 
 	go func() {
 		defer close(replicateCh)
 
 		var wg sync.WaitGroup
-		for id, addr := range l.peers {
+		for _, peer := range peers {
 			wg.Add(1)
 			go func(id RaftId, addr RaftAddr) {
 				defer wg.Done()
@@ -164,7 +166,7 @@ func (l *leader) replicate(ctx context.Context) error {
 						l.nextIndex.Store(id, netxIndex)
 						matchIndex := lastLogIndex
 						l.matchIndex.Store(id, matchIndex)
-						replicateCh <- struct{}{}
+						replicateCh <- id
 						return
 					}
 
@@ -219,7 +221,7 @@ func (l *leader) replicate(ctx context.Context) error {
 							l.nextIndex.Store(id, nextIndex)
 						}
 						l.matchIndex.Store(id, prevLogIndex+uint64(len(args.Entries)))
-						replicateCh <- struct{}{}
+						replicateCh <- id
 						return
 					}
 					// If AppendEntries fails because of log inconsistency:
@@ -229,19 +231,19 @@ func (l *leader) replicate(ctx context.Context) error {
 					}
 					l.nextIndex.Store(id, nextIndex-1)
 				}
-			}(id, addr)
+			}(peer.Id, peer.Addr)
 		}
 		wg.Wait()
 	}()
 
-	var count int
+	decider := newDecider(peersList)
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-replicateCh:
-			count++
-			if count > len(l.peers)/2 {
+		case replicateId := <-replicateCh:
+			decider.AddVote(replicateId)
+			if decider.HasAchievedMajority() {
 				return nil
 			}
 		}
