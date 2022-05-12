@@ -50,11 +50,11 @@ func (*follower) IsLeader() bool {
 }
 
 // AddPeers add peers to cluster
-func (*follower) AddPeers(peers []RaftPeer) error {
+func (*follower) AddPeers(ctx context.Context, peers []RaftPeer) error {
 	return ErrIsNotLeader
 }
 
 // RemovePeers remove peers from cluster
-func (*follower) RemovePeers(peers []RaftPeer) error {
+func (*follower) RemovePeers(ctx context.Context, peers []RaftId) error {
 	return ErrIsNotLeader
 }

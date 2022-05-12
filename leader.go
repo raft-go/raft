@@ -2,6 +2,8 @@ package raft
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -28,6 +30,9 @@ type leader struct {
 
 	// noop for send no-op entry just once
 	noop int32
+
+	// ccm configuration changes mutext
+	ccm sync.Mutex
 }
 
 func (l *leader) Run() (server, error) {
@@ -86,7 +91,7 @@ func (l *leader) Handle(ctx context.Context, cmd ...Command) error {
 		return err
 	}
 
-	err = l.replicate(ctx)
+	err = l.replicateToAll(ctx)
 	if err != nil {
 		return err
 	}
@@ -118,7 +123,7 @@ func (l *leader) replicateNoop() error {
 	if err != nil {
 		return err
 	}
-	err = l.replicate(context.Background())
+	err = l.replicateToAll(context.Background())
 	if err != nil {
 		return err
 	}
@@ -170,9 +175,9 @@ func (*leader) String() string {
 	return "Leader"
 }
 
-// replicate
-// replicate log entries
-func (l *leader) replicate(ctx context.Context) error {
+// replicateToAll
+// replicateToAll log entries to all peers
+func (l *leader) replicateToAll(ctx context.Context) error {
 	peersList := l.raft.configs.GetPeersList()
 	peers := peersList2Peers(peersList)
 	replicateCh := make(chan RaftId, len(peers))
@@ -194,79 +199,14 @@ func (l *leader) replicate(ctx context.Context) error {
 						// no-op
 					}
 
-					if l.Id() == id {
-						lastLogIndex, _, err := l.Last()
-						if err != nil {
-							continue
-						}
-						netxIndex := lastLogIndex + 1
-						l.nextIndex.Store(id, netxIndex)
-						matchIndex := lastLogIndex
-						l.matchIndex.Store(id, matchIndex)
-						replicateCh <- id
-						return
-					}
-
-					nextIndex, _ := l.nextIndex.Load(id)
-					prevLogIndex := nextIndex - 1
-					prevLogTerm, err := l.Get(prevLogIndex)
-					if err != nil {
-						return
-					}
-
-					var entries []LogEntry
-					// 为了避免 Figure 8 的问题
-					// 若最新 log entry 的 term 不是 currentTerm
-					// 则不复制
-					lastLogIndex, lastLogTerm, err := l.Last()
+					success, err := l.replicate(id, addr)
 					if err != nil {
 						continue
 					}
-					if lastLogTerm == l.GetCurrentTerm() {
-						// FIXME: 什么时候会出现 last log index < next ?
-						// If last log index ≥ nextIndex for a follower: send
-						// AppendEntries RPC with log entries starting at nextIndex
-						if lastLogIndex >= nextIndex {
-							start, end := nextIndex-1, lastLogIndex
-							entries, err = l.RangeGet(start, end)
-							if err != nil {
-								continue
-							}
-						}
-					}
-
-					args := AppendEntriesArgs{
-						Term:         l.GetCurrentTerm(),
-						LeaderId:     l.Id(),
-						PrevLogIndex: prevLogIndex,
-						PrevLogTerm:  prevLogTerm,
-						Entries:      entries,
-						LeaderCommit: l.GetCommitIndex(),
-					}
-
-					results, err := l.rpc.CallAppendEntries(addr, args)
-					if err != nil {
-						l.debug("Call %s's AppendEntries, err: %+v", id, err)
-						return
-					}
-
-					// If successful: update nextIndex and matchIndex for
-					// follower (§5.3)
-					if results.Success {
-						if len(args.Entries) > 0 {
-							nextIndex := args.Entries[len(args.Entries)-1].Index + 1
-							l.nextIndex.Store(id, nextIndex)
-						}
-						l.matchIndex.Store(id, prevLogIndex+uint64(len(args.Entries)))
+					if success {
 						replicateCh <- id
 						return
 					}
-					// If AppendEntries fails because of log inconsistency:
-					// decrement nextIndex and retry (§5.3)
-					if nextIndex == 1 {
-						return
-					}
-					l.nextIndex.Store(id, nextIndex-1)
 				}
 			}(peer.Id, peer.Addr)
 		}
@@ -285,6 +225,82 @@ func (l *leader) replicate(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// replicate replicate log entries to specify peer
+func (l *leader) replicate(id RaftId, addr RaftAddr) (success bool, err error) {
+	if l.Id() == id {
+		lastLogIndex, _, err := l.Last()
+		if err != nil {
+			return false, err
+		}
+		netxIndex := lastLogIndex + 1
+		l.nextIndex.Store(id, netxIndex)
+		matchIndex := lastLogIndex
+		l.matchIndex.Store(id, matchIndex)
+		return false, nil
+	}
+
+	nextIndex, _ := l.nextIndex.Load(id)
+	prevLogIndex := nextIndex - 1
+	prevLogTerm, err := l.Get(prevLogIndex)
+	if err != nil {
+		return
+	}
+
+	var entries []LogEntry
+	// 为了避免 Figure 8 的问题
+	// 若最新 log entry 的 term 不是 currentTerm
+	// 则不复制
+	lastLogIndex, lastLogTerm, err := l.Last()
+	if err != nil {
+		return false, err
+	}
+	if lastLogTerm == l.GetCurrentTerm() {
+		// FIXME: 什么时候会出现 last log index < next ?
+		// If last log index ≥ nextIndex for a follower: send
+		// AppendEntries RPC with log entries starting at nextIndex
+		if lastLogIndex >= nextIndex {
+			start, end := nextIndex-1, lastLogIndex
+			entries, err = l.RangeGet(start, end)
+			if err != nil {
+				return false, err
+			}
+		}
+	}
+
+	args := AppendEntriesArgs{
+		Term:         l.GetCurrentTerm(),
+		LeaderId:     l.Id(),
+		PrevLogIndex: prevLogIndex,
+		PrevLogTerm:  prevLogTerm,
+		Entries:      entries,
+		LeaderCommit: l.GetCommitIndex(),
+	}
+
+	results, err := l.rpc.CallAppendEntries(addr, args)
+	if err != nil {
+		l.debug("Call %s's AppendEntries, err: %+v", id, err)
+		return false, err
+	}
+	// If successful: update nextIndex and matchIndex for
+	// follower (§5.3)
+	if results.Success {
+		if len(args.Entries) > 0 {
+			nextIndex := args.Entries[len(args.Entries)-1].Index + 1
+			l.nextIndex.Store(id, nextIndex)
+		}
+		l.matchIndex.Store(id, prevLogIndex+uint64(len(args.Entries)))
+		return results.Success, nil
+	}
+
+	// If AppendEntries fails because of log inconsistency:
+	// decrement nextIndex and retry (§5.3)
+	if nextIndex == 1 {
+		return results.Success, nil
+	}
+	l.nextIndex.Store(id, nextIndex-1)
+	return results.Success, nil
 }
 
 // refreshCommitIndex
@@ -395,13 +411,93 @@ func (x uint64Slice) Less(i, j int) bool { return x[i] < x[j] }
 func (x uint64Slice) Swap(i, j int)      { x[i], x[j] = x[j], x[i] }
 
 // AddPeers add peers to cluster
-func (l *leader) AddPeers(peers []RaftPeer) error {
+func (l *leader) AddPeers(ctx context.Context, peers []RaftPeer) error {
+	if len(peers) == 0 {
+		return nil
+	}
+
+	// non-voting phase
+	err := l.addNonVoting(ctx, peers)
+	if err != nil {
+		return err
+	}
+
 	// TODO:
+	l.ccm.Lock()
+	defer l.ccm.Unlock()
+
+	return nil
+}
+
+// addNonVoting catch up leader's log entries
+//
+// In order to avoid availability gaps, Raft introduces an additional phase before the configuration
+// change, in which a new server joins the cluster as a non-voting member. The leader replicates
+// log entries to it, but it is not yet counted towards majorities for voting or commitment purposes.
+// Once the new server has caught up with the rest of the cluster, the reconfiguration can proceed
+func (l *leader) addNonVoting(ctx context.Context, peers []RaftPeer) error {
+	errCh := make(chan error, len(peers))
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		defer close(errCh)
+
+		var wg sync.WaitGroup
+		for i := range peers {
+			peer := peers[i]
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				// We suggest the following algorithm to determine when a new server is sufficiently caught up
+				// to add to the cluster. The replication of entries to the new server is split into rounds, as shown in
+				// Figure 4.5. Each round replicates all the log entries present in the leader’s log at the start of the
+				// round to the new server’s log. While it is replicating entries for its current round, new entries may
+				// arrive at the leader; it will replicate these during the next round. As progress is made, the round
+				// durations shrink in time. The algorithm waits a fixed number of rounds (such as 10). If the last
+				// round lasts less than an election timeout, then the leader adds the new server to the cluster, under
+				// the assumption that there are not enough unreplicated entries to create a significant availability gap.
+				const rounds = 10
+				for i := 0; i < rounds; i++ {
+					select {
+					case <-ctx.Done():
+						return
+					default:
+						// no-op
+					}
+
+					start := time.Now()
+					success, err := l.replicate(peer.Id, peer.Addr)
+					if i < rounds-1 {
+						continue
+					}
+
+					if err != nil {
+						errCh <- err
+						return
+					}
+					timout := time.Since(start) > l.raft.electionTimeout[0]
+					if timout || !success {
+						format := "Peer %s may bee too slow to catch up leader"
+						msg := fmt.Sprintf(format, peer)
+						err = errors.New(msg)
+						errCh <- err
+						return
+					}
+				}
+			}()
+		}
+		wg.Wait()
+	}()
+	err := <-errCh
+	if err != nil {
+		cancel()
+		return err
+	}
 	return nil
 }
 
 // RemovePeers remove peers from cluster
-func (l *leader) RemovePeers(peers []RaftPeer) error {
+func (l *leader) RemovePeers(ctx context.Context, peers []RaftId) error {
 	// TODO:
 	return nil
 }

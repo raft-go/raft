@@ -86,9 +86,9 @@ type Raft interface {
 	IsLeader() bool
 
 	// AddPeers add peers to cluster
-	AddPeers(peers []RaftPeer) error
+	AddPeers(ctx context.Context, peers []RaftPeer) error
 	// RemovePeers remove peers from cluster
-	RemovePeers(peers []RaftPeer) error
+	RemovePeers(ctx context.Context, peers []RaftId) error
 }
 
 // RaftId raft 一致性模型 id
@@ -472,11 +472,11 @@ func (r *raft) who() string {
 }
 
 // AddPeers add peers to cluster
-func (r *raft) AddPeers(peers []RaftPeer) error {
-	return r.GetServer().AddPeers(peers)
+func (r *raft) AddPeers(ctx context.Context, peers []RaftPeer) error {
+	return r.GetServer().AddPeers(ctx, peers)
 }
 
 // RemovePeers remove peers from cluster
-func (r *raft) RemovePeers(peers []RaftPeer) error {
-	return r.GetServer().RemovePeers(peers)
+func (r *raft) RemovePeers(ctx context.Context, peers []RaftId) error {
+	return r.GetServer().RemovePeers(ctx, peers)
 }

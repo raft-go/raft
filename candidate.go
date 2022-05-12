@@ -159,11 +159,11 @@ func (*candidate) IsLeader() bool {
 }
 
 // AddPeers add peers to cluster
-func (*candidate) AddPeers(peers []RaftPeer) error {
+func (*candidate) AddPeers(ctx context.Context, peers []RaftPeer) error {
 	return ErrIsNotLeader
 }
 
 // RemovePeers remove peers from cluster
-func (*candidate) RemovePeers(peers []RaftPeer) error {
+func (*candidate) RemovePeers(ctx context.Context, peers []RaftId) error {
 	return ErrIsNotLeader
 }

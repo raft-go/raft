@@ -2,6 +2,7 @@ package raft
 
 import (
 	"encoding/json"
+	"fmt"
 	"sync"
 )
 
@@ -163,6 +164,10 @@ func (ps raftPeers) Clone() raftPeers {
 type RaftPeer struct {
 	Id   RaftId
 	Addr RaftAddr
+}
+
+func (p RaftPeer) String() string {
+	return fmt.Sprintf("(%s, %s)", p.Id, p.Addr)
 }
 
 // peersList2Peers flaten peersList and unique
