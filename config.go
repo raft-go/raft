@@ -3,23 +3,18 @@ package raft
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
 )
 
-// configManager manage cluster configs
-type configManager interface {
-	// GetPeers get a deep copy of cluster config peers
-	GetPeersList() [][]RaftPeer
-	// GetIndex get last cluster config's log entry index
-	GetIndex() uint64
-	// LenConfigs configs length
-	LenConfigs() int
-	// AddConfig add cluster config
-	AddConfig(index uint64, peers []RaftPeer) error
-	// FallbackConfig fall back to previous cluster config
-	FallbackConfig() error
-	// AdvanceConfig go forward cluster config
-	AdvanceConfig() error
+// RaftPeer raft peer
+type RaftPeer struct {
+	Id   RaftId
+	Addr RaftAddr
+}
+
+func (p RaftPeer) String() string {
+	return fmt.Sprintf("(%s, %s)", p.Id, p.Addr)
 }
 
 func newConfigManager(store Store) (*configManagerImpl, error) {
@@ -32,6 +27,19 @@ func newConfigManager(store Store) (*configManagerImpl, error) {
 		return nil, err
 	}
 	return m, nil
+}
+
+// configManager manage cluster configs
+type configManager interface {
+	// GetConfig()
+	GetConfig() config
+	// UseConfig use config cfg
+	UseConfig(cfg config) error
+	// FallbackConfig fall back to previous cluster config
+	FallbackConfig() error
+
+	// NewConfigLogEntry
+	NewConfigLogEntry(term uint64, cfg config) (*LogEntry, error)
 }
 
 var _ configManager = (*configManagerImpl)(nil)
@@ -53,49 +61,22 @@ func (m *configManagerImpl) load() error {
 	return m.unmarshal(b, &m.configs)
 }
 
-// GetPeersList get a deep copy of cluster config peers
-func (m *configManagerImpl) GetPeersList() [][]RaftPeer {
+// GetConfig
+func (m *configManagerImpl) GetConfig() config {
 	m.mux.RLock()
 	defer m.mux.RUnlock()
-
-	var peersList [][]RaftPeer
-	for i := range m.configs {
-		config := m.configs[i]
-		peers := raftPeers(config.peers).Clone()
-		peersList = append(peersList, peers)
-	}
-	return peersList
-}
-
-// GetIndex get last cluster config's log entry index
-func (m *configManagerImpl) GetIndex() uint64 {
-	m.mux.RLock()
-	defer m.mux.RUnlock()
-
 	if len(m.configs) == 0 {
-		return 0
+		return zeroConfig
 	}
-	return m.configs[0].index
+	return m.configs[len(m.configs)-1]
 }
 
-// LenConfigs configs length
-func (m *configManagerImpl) LenConfigs() int {
-	m.mux.RLock()
-	defer m.mux.RUnlock()
-
-	return len(m.configs)
-}
-
-// AddConfig add cluster config
-func (m *configManagerImpl) AddConfig(index uint64, peers []RaftPeer) error {
+// UseConfig use config cfg
+func (m *configManagerImpl) UseConfig(cfg config) error {
 	m.mux.Lock()
 	defer m.mux.Unlock()
 
-	m.configs = append(m.configs, config{
-		index: index,
-		peers: peers,
-	})
-
+	m.configs = append(m.configs, cfg)
 	b, err := m.marshal(m.configs)
 	if err != nil {
 		return err
@@ -121,20 +102,17 @@ func (m *configManagerImpl) FallbackConfig() error {
 	return m.store.Set(m.configsKey, b)
 }
 
-// AdvanceConfig go forward cluster config
-func (m *configManagerImpl) AdvanceConfig() error {
-	m.mux.Lock()
-	defer m.mux.Unlock()
-
-	if len(m.configs) == 0 {
-		return nil
-	}
-
-	b, err := m.marshal(m.configs)
+// NewConfigLogEntry
+func (*configManagerImpl) NewConfigLogEntry(term uint64, cfg config) (*LogEntry, error) {
+	b, err := cfg.Bytes()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return m.store.Set(m.configsKey, b)
+	return &LogEntry{
+		Term:    term,
+		Type:    logEntryTypeConfig,
+		Command: b,
+	}, nil
 }
 
 func (*configManagerImpl) marshal(configs []config) ([]byte, error) {
@@ -145,65 +123,133 @@ func (*configManagerImpl) unmarshal(b []byte, configs *[]config) error {
 	return json.Unmarshal(b, configs)
 }
 
-type config struct {
-	index uint64
-	peers []RaftPeer
+// config cluster configuration
+type config interface {
+	// IsJoint 是否是 joint consensus config
+	IsJoint() bool
+	// GetIndex 获取配置对应的 log entry index
+	GetIndex() uint64
+	// GetPeers 获取集群配置所有的 peer
+	GetPeers() []RaftPeer
+	// NewDecider 生成该配置的决策器
+	NewDecider() decider
+	// GenJointConfig 根据 add peers 与 remove peers 生成 joint consensus configuration
+	GenJointConfig(add []RaftPeer, remove []RaftPeer) config
+	// SetIndex set i to config' log entry index
+	// 只能设置一次
+	SetIndex(i uint64)
+	// Bytes
+	Bytes() ([]byte, error)
+	// NewCommitCalc
+	NewCommitCalc() commitCalc
 }
 
-type raftPeers []RaftPeer
+var zeroConfig config = &configImpl{}
 
-func (ps raftPeers) Clone() raftPeers {
-	peers := make(raftPeers, 0, len(ps))
-	for i := range ps {
-		peers = append(peers, ps[i])
-	}
-	return peers
+var _ config = (*configImpl)(nil)
+
+// configImpl implement config interface
+type configImpl struct {
+	index     uint64
+	peersList [][]RaftPeer
+
+	once sync.Once
 }
 
-// RaftPeer raft peer
-type RaftPeer struct {
-	Id   RaftId
-	Addr RaftAddr
+// IsJoint 是否是 joint consensus config
+func (c *configImpl) IsJoint() bool {
+	return len(c.peersList) > 1
 }
 
-func (p RaftPeer) String() string {
-	return fmt.Sprintf("(%s, %s)", p.Id, p.Addr)
+// GetIndex 获取配置对应的 log entry index
+func (c *configImpl) GetIndex() uint64 {
+	return c.index
 }
 
-// peersList2Peers flaten peersList and unique
-func peersList2Peers(peersList [][]RaftPeer) []RaftPeer {
-	var outPeers []RaftPeer
-	for _, peers := range peersList {
+// GetPeers 获取集群配置所有的 peer
+func (c *configImpl) GetPeers() []RaftPeer {
+	var result []RaftPeer
+	for _, peers := range c.peersList {
 		for _, peer := range peers {
-			var has bool
-			for j := range outPeers {
-				if outPeers[j].Id == peer.Id {
-					has = true
-					break
-				}
-			}
-			if !has {
-				outPeers = append(outPeers, peer)
+			if !includePeer(result, peer) {
+				result = append(result, peer)
 			}
 		}
 	}
-	return outPeers
+	return result
 }
 
-func newDecider(peersList [][]RaftPeer) *decider {
-	return &decider{
-		peersList: peersList,
-		counts:    make([]int, len(peersList)),
+// NewDecider 生成该配置的决策器
+func (c *configImpl) NewDecider() decider {
+	return &deciderImpl{
+		peersList: c.peersList,
+		counts:    make([]int, len(c.peersList)),
 	}
 }
 
-// decider 决策器
-type decider struct {
+// NewCommitCalc
+func (c *configImpl) NewCommitCalc() commitCalc {
+	return &commitCalcImpl{
+		peersList:  c.peersList,
+		matchIndex: make(map[RaftId]uint64),
+	}
+}
+
+// GenJointConfig 根据 add peers 与 remove peers 生成 joint consensus configuration
+func (c *configImpl) GenJointConfig(add []RaftPeer, remove []RaftPeer) config {
+	// TODO:
+	return nil
+}
+
+// SetIndex set i to config' log entry index
+// 只能设置一次
+func (c *configImpl) SetIndex(i uint64) {
+	if c.index > 0 || i < 1 {
+		return
+	}
+	c.index = i
+}
+
+// Bytes
+func (c *configImpl) Bytes() ([]byte, error) {
+	return json.Marshal(c.peersList)
+}
+
+// includePeer peers 中是否包含 peer
+func includePeer(peers []RaftPeer, peer RaftPeer) bool {
+	for i := range peers {
+		if peers[i].Id == peer.Id {
+			return true
+		}
+	}
+	return false
+}
+
+// clonePeers deep clone peers
+func clonePeers(peers []RaftPeer) []RaftPeer {
+	results := make([]RaftPeer, 0, len(peers))
+	for i := range peers {
+		results = append(results, peers[i])
+	}
+	return results
+}
+
+// decider
+type decider interface {
+	AddVote(voterId RaftId)
+	HasAchievedMajority() bool
+	Counts() []int
+}
+
+var _ decider = (*deciderImpl)(nil)
+
+// deciderImpl implement decider
+type deciderImpl struct {
 	peersList [][]RaftPeer
 	counts    []int
 }
 
-func (d *decider) AddVote(voterId RaftId) *decider {
+func (d *deciderImpl) AddVote(voterId RaftId) {
 	for i, peers := range d.peersList {
 		for _, peer := range peers {
 			if peer.Id == voterId {
@@ -212,10 +258,13 @@ func (d *decider) AddVote(voterId RaftId) *decider {
 			}
 		}
 	}
-	return d
 }
 
-func (d *decider) HasAchievedMajority() bool {
+func (d *deciderImpl) HasAchievedMajority() bool {
+	if len(d.peersList) == 0 {
+		return false
+	}
+
 	achievedMajority := true
 	for i, peers := range d.peersList {
 		if d.counts[i] <= len(peers)/2 {
@@ -226,6 +275,61 @@ func (d *decider) HasAchievedMajority() bool {
 	return achievedMajority
 }
 
-func (d *decider) Counts() []int {
+func (d *deciderImpl) Counts() []int {
 	return d.counts
+}
+
+// commitCalc 根据每个 peer 的 matchIndex
+// 计算下一个 commitIndex
+type commitCalc interface {
+	Add(id RaftId, matchIndex uint64)
+	Calc() (nextCommitIndex uint64)
+}
+
+type commitCalcImpl struct {
+	peersList  [][]RaftPeer
+	matchIndex map[RaftId]uint64
+}
+
+func (c *commitCalcImpl) Add(id RaftId, matchIndex uint64) {
+	if len(c.peersList) == 0 {
+		return
+	}
+
+	c.matchIndex[id] = matchIndex
+}
+
+func (c *commitCalcImpl) Calc() (nextCommitIndex uint64) {
+	if len(c.peersList) == 0 {
+		return 0
+	}
+
+	nextCommitIndexes := make([]uint64, 0, len(c.peersList))
+	for _, peers := range c.peersList {
+		nextCommitIndexes = append(nextCommitIndexes, c.calcFor(peers))
+	}
+
+	nextCommitIndex = nextCommitIndexes[0]
+	for i := 1; i < len(nextCommitIndexes); i++ {
+		if nextCommitIndexes[i] < nextCommitIndex {
+			nextCommitIndex = nextCommitIndexes[i]
+		}
+	}
+	return nextCommitIndex
+}
+
+func (c *commitCalcImpl) calcFor(peers []RaftPeer) uint64 {
+	if len(peers) == 0 {
+		return 0
+	}
+	// If there exists an N such that N > commitIndex, a majority
+	// of matchIndex[i] ≥ N, and log[N].term == currentTerm:
+	// set commitIndex = N (§5.3, §5.4).
+	matchIndex := make([]uint64, 0, len(peers))
+	for _, peer := range peers {
+		matchIndex = append(matchIndex, c.matchIndex[peer.Id])
+	}
+	sort.Sort(uint64Slice(matchIndex))
+	mid := (len(matchIndex) - 1) / 2
+	return matchIndex[mid]
 }

@@ -24,6 +24,8 @@ type Log interface {
 	AppendAfter(afterIndex uint64, entries ...LogEntry) error
 	// Append 追加log entry
 	Append(entries ...LogEntry) error
+	// AppendEntry 追加一个 log entry , 并返回索引
+	AppendEntry(entry LogEntry) (index uint64, err error)
 }
 
 type LogEntryType uint8
@@ -163,4 +165,18 @@ func (l *memoryLog) Append(entries ...LogEntry) error {
 	}
 	l.queue = append(l.queue, entries...)
 	return nil
+}
+
+// AppendEntry 追加一个 log entry , 并返回索引
+func (l *memoryLog) AppendEntry(entry LogEntry) (index uint64, err error) {
+	l.mux.Lock()
+	defer l.mux.Unlock()
+	last, _, err := l.last()
+	if err != nil {
+		return 0, err
+	}
+
+	entry.Index = last + 1
+	l.queue = append(l.queue, entry)
+	return entry.Index, nil
 }

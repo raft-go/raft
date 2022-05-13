@@ -428,7 +428,7 @@ func (r *raft) toLeader() (server, error) {
 		return nil, err
 	}
 
-	peers := peersList2Peers(r.configs.GetPeersList())
+	peers := r.configs.GetConfig().GetPeers()
 	for _, peer := range peers {
 		server.nextIndex.Store(peer.Id, lastLogIndex+1)
 		server.matchIndex.Store(peer.Id, 0)

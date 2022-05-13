@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -143,7 +142,8 @@ func (l *leader) sendHeartbeats() error {
 	// heartbeats (AppendEntries RPCs that carry no log entries)
 	// to all followers in order to maintain their authority.
 	var wg sync.WaitGroup
-	for _, peer := range peersList2Peers(l.raft.configs.GetPeersList()) {
+	config := l.raft.configs.GetConfig()
+	for _, peer := range config.GetPeers() {
 		addr := peer.Addr
 		wg.Add(1)
 		go func() {
@@ -178,8 +178,8 @@ func (*leader) String() string {
 // replicateToAll
 // replicateToAll log entries to all peers
 func (l *leader) replicateToAll(ctx context.Context) error {
-	peersList := l.raft.configs.GetPeersList()
-	peers := peersList2Peers(peersList)
+	config := l.configs.GetConfig()
+	peers := config.GetPeers()
 	replicateCh := make(chan RaftId, len(peers))
 
 	go func() {
@@ -213,7 +213,7 @@ func (l *leader) replicateToAll(ctx context.Context) error {
 		wg.Wait()
 	}()
 
-	decider := newDecider(peersList)
+	decider := config.NewDecider()
 	for {
 		select {
 		case <-ctx.Done():
@@ -327,22 +327,22 @@ func (l *leader) refreshCommitIndex() (bool, error) {
 		return false, nil
 	}
 
-	// If there exists an N such that N > commitIndex, a majority
-	// of matchIndex[i] ≥ N, and log[N].term == currentTerm:
-	// set commitIndex = N (§5.3, §5.4).
-	var matchIndex []uint64
-	l.matchIndex.Range(func(_ RaftId, index uint64) bool {
-		matchIndex = append(matchIndex, index)
+	// uses the latest configuration to make decision
+	calculator := l.configs.GetConfig().NewCommitCalc()
+	l.matchIndex.Range(func(id RaftId, index uint64) bool {
+		calculator.Add(id, index)
 		return true
 	})
-	commitIndex := l.GetCommitIndex()
-	sort.Sort(uint64Slice(matchIndex))
-	mid := (len(matchIndex) - 1) / 2
-	nextCommitIndex := matchIndex[mid]
+	nextCommitIndex := calculator.Calc()
 
-	if nextCommitIndex <= commitIndex {
+	commitIndex := l.GetCommitIndex()
+	if nextCommitIndex < commitIndex {
 		return false, nil
 	}
+	if nextCommitIndex == commitIndex {
+		return true, nil
+	}
+
 	nextTerm, err := l.Get(nextCommitIndex)
 	if err != nil {
 		return false, err
@@ -422,9 +422,45 @@ func (l *leader) AddPeers(ctx context.Context, peers []RaftPeer) error {
 		return err
 	}
 
-	// TODO:
 	l.ccm.Lock()
 	defer l.ccm.Unlock()
+
+	// generate joint consensus configuration
+	config := l.raft.configs.GetConfig()
+	jointConfig := config.GenJointConfig(peers, nil)
+	// store the configuration for joint consensus as log entry
+	logEntry, err := l.configs.NewConfigLogEntry(
+		l.GetCurrentTerm(), jointConfig)
+	if err != nil {
+		return err
+	}
+	index, err := l.Log.AppendEntry(*logEntry)
+	if err != nil {
+		return err
+	}
+	jointConfig.SetIndex(index)
+	// uses that configuration for all future decisions (a server
+	// always uses the latest configuration in its log, regardless
+	// of whether the entry is committed).
+	err = l.configs.UseConfig(jointConfig)
+	if err != nil {
+		return err
+	}
+	// replicates log entry
+	err = l.replicateToAll(ctx)
+	if err != nil {
+		return err
+	}
+	// commit index
+	ok, err := l.refreshCommitIndex()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		// FIXME:
+		panic("refresh commit index failed")
+	}
+	//  TODO:
 
 	return nil
 }

@@ -14,13 +14,13 @@ type candidate struct {
 }
 
 func (c *candidate) Run() (server, error) {
-	peersList := c.raft.configs.GetPeersList()
-	peers := peersList2Peers(peersList)
+	config := c.raft.configs.GetConfig()
+	peers := config.GetPeers()
 	voteCh, err := c.elect(peers)
 	if err != nil {
 		return nil, err
 	}
-	decider := newDecider(peersList)
+	decider := config.NewDecider()
 
 	for {
 		for ok := true; ok; {
