@@ -198,6 +198,28 @@ func (s *rpcService) AppendEntries(args AppendEntriesArgs, results *AppendEntrie
 		if err != nil {
 			return err
 		}
+
+		// fallback config if config log entry is delete
+		config := s.raft.configs.GetConfig()
+		for config.GetIndex() > args.PrevLogIndex {
+			err = s.raft.configs.FallbackConfig()
+			if err != nil {
+				return err
+			}
+			config = s.raft.configs.GetConfig()
+		}
+		// Once a given server adds the new configuration entry to its log,
+		// it uses that configuration for all future decisions
+		for i, entry := range args.Entries {
+			index := args.PrevLogIndex + uint64(i) + 1
+			if entry.Type == logEntryTypeConfig {
+				config, err := s.raft.configs.NewConfig(index, entry.Command)
+				if err != nil {
+					return err
+				}
+				s.raft.configs.UseConfig(config)
+			}
+		}
 	}
 	// 	5. If leaderCommit > commitIndex,
 	//		set commitIndex = min(leaderCommit, index of last new entry)

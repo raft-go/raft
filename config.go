@@ -2,6 +2,7 @@ package raft
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -40,6 +41,8 @@ type configManager interface {
 
 	// NewConfigLogEntry
 	NewConfigLogEntry(term uint64, cfg config) (*LogEntry, error)
+	// NewConfig
+	NewConfig(index uint64, data []byte) (config, error)
 }
 
 var _ configManager = (*configManagerImpl)(nil)
@@ -65,6 +68,10 @@ func (m *configManagerImpl) load() error {
 func (m *configManagerImpl) GetConfig() config {
 	m.mux.RLock()
 	defer m.mux.RUnlock()
+	return m.getConfig()
+}
+
+func (m *configManagerImpl) getConfig() config {
 	if len(m.configs) == 0 {
 		return zeroConfig
 	}
@@ -76,6 +83,9 @@ func (m *configManagerImpl) UseConfig(cfg config) error {
 	m.mux.Lock()
 	defer m.mux.Unlock()
 
+	if cfg.GetIndex() <= m.getConfig().GetIndex() {
+		return errors.New("prepare to use config's index is less than or equal current config")
+	}
 	m.configs = append(m.configs, cfg)
 	b, err := m.marshal(m.configs)
 	if err != nil {
@@ -113,6 +123,17 @@ func (*configManagerImpl) NewConfigLogEntry(term uint64, cfg config) (*LogEntry,
 		Type:    logEntryTypeConfig,
 		Command: b,
 	}, nil
+}
+
+// NewConfig
+func (*configManagerImpl) NewConfig(index uint64, peersListBytes []byte) (config, error) {
+	var config configImpl
+	err := json.Unmarshal(peersListBytes, &config.peersList)
+	if err != nil {
+		return nil, err
+	}
+	config.index = index
+	return &config, err
 }
 
 func (*configManagerImpl) marshal(configs []config) ([]byte, error) {
