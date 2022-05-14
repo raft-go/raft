@@ -49,7 +49,8 @@ var _ configManager = (*configManagerImpl)(nil)
 
 // configManagerImpl implement configManager
 type configManagerImpl struct {
-	mux        sync.RWMutex
+	mux sync.RWMutex
+	// FIXME: memory leak
 	configs    []config
 	configsKey []byte
 
@@ -170,6 +171,12 @@ type config interface {
 }
 
 var zeroConfig config = &configImpl{}
+
+func newBootstrapAsLeaderConfig(peer RaftPeer) config {
+	return &configImpl{
+		peersList: [][]RaftPeer{{peer}},
+	}
+}
 
 var _ config = (*configImpl)(nil)
 

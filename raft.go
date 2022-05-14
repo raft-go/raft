@@ -17,7 +17,7 @@ var (
 )
 
 // New 实例化一个 raft 一致性模型
-func New(id RaftId, apply Apply, store Store, log Log, peers map[RaftId]RaftAddr, optFns ...OptFn) (Raft, error) {
+func New(id RaftId, addr RaftAddr, apply Apply, store Store, log Log, optFns ...OptFn) (Raft, error) {
 	opts := newOpts()
 	for _, fn := range optFns {
 		fn(opts)
@@ -44,7 +44,7 @@ func New(id RaftId, apply Apply, store Store, log Log, peers map[RaftId]RaftAddr
 		serverAccessor: newServerAccessor(&sync.Mutex{}),
 
 		rpc:  opts.rpc,
-		addr: peers[id],
+		addr: addr,
 
 		commitCond: sync.NewCond(&sync.Mutex{}),
 		rpcArgs:    make(chan rpcArgs),
@@ -53,6 +53,8 @@ func New(id RaftId, apply Apply, store Store, log Log, peers map[RaftId]RaftAddr
 		electionTimeout: opts.election,
 
 		logger: opts.logger,
+
+		bootstrapAsLeader: opts.bootstrapAsLeader,
 
 		done: make(chan struct{}),
 	}
@@ -140,6 +142,9 @@ type raft struct {
 	// whether or not already ran
 	ran int32
 
+	// wether or not bootstrap as leader
+	bootstrapAsLeader bool
+
 	// 表示一致性模型是否已停用
 	done chan struct{}
 }
@@ -151,6 +156,42 @@ func (r *raft) init() (err error) {
 	timeout := r.randomElectionTimeout()
 	ticker := time.NewTicker(timeout)
 	r.ticker = ticker
+
+	if r.bootstrapAsLeader {
+		lastIndex, _, err := r.Log.Last()
+		if err != nil {
+			return err
+		}
+		if lastIndex == 0 {
+			// Instead, we recommend that the very first time a cluster is created,
+			// one server is initialized with a configuration entry as the first entry in its log.
+			// This configuration lists only that one server;
+			// it alone forms a majority of its configuration,
+			// so it can consider this configuration committed.
+			//
+			// Other servers from then on should be initialized with empty logs;
+			// they are added to the cluster and learn of the current configuration
+			// through the membership change mechanism.
+			peer := RaftPeer{r.Id(), r.Addr()}
+			config := newBootstrapAsLeaderConfig(peer)
+			entry, err := r.configs.NewConfigLogEntry(
+				r.GetCurrentTerm(), config)
+			if err != nil {
+				return err
+			}
+			index, err := r.Log.AppendEntry(*entry)
+			if err != nil {
+				return err
+			}
+			config.SetIndex(index)
+			err = r.configs.UseConfig(config)
+			if err != nil {
+				return err
+			}
+			r.SetCommitIndex(index)
+			r.debug("Will bootstrap as leader")
+		}
+	}
 
 	server, err := r.toFollower(r.GetCurrentTerm())
 	r.SetServer(server)
