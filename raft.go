@@ -85,10 +85,8 @@ type Raft interface {
 	// IsLeader 是否是 Leader
 	IsLeader() bool
 
-	// AddPeers add peers to cluster
-	AddPeers(ctx context.Context, peers []RaftPeer) error
-	// RemovePeers remove peers from cluster
-	RemovePeers(ctx context.Context, peers []RaftId) error
+	// ChangeConfig add added and remove removed
+	ChangeConfig(ctx context.Context, added []RaftPeer, removed []RaftId) error
 }
 
 // RaftId raft 一致性模型 id
@@ -417,8 +415,11 @@ func (r *raft) toCandidate() server {
 func (r *raft) toLeader() (server, error) {
 	defer r.debug("Convert to leader")
 
+	var mux sync.Mutex
 	server := &leader{
-		raft: r,
+		raft:            r,
+		ccm:             &mux,
+		jointCommitCond: sync.NewCond(&mux),
 	}
 
 	// Volatile state on leaders:
@@ -471,12 +472,11 @@ func (r *raft) who() string {
 	return fmt.Sprintf("[%s:%d:%d:%d:%s]", r.Id(), r.GetCurrentTerm(), r.GetCommitIndex(), r.GetLastApplied(), state)
 }
 
-// AddPeers add peers to cluster
-func (r *raft) AddPeers(ctx context.Context, peers []RaftPeer) error {
-	return r.GetServer().AddPeers(ctx, peers)
-}
+// ChangeConfig add added and remove removed
+func (r *raft) ChangeConfig(ctx context.Context, added []RaftPeer, removed []RaftId) error {
+	if !r.GetServer().IsLeader() {
+		return ErrIsNotLeader
+	}
 
-// RemovePeers remove peers from cluster
-func (r *raft) RemovePeers(ctx context.Context, peers []RaftId) error {
-	return r.GetServer().RemovePeers(ctx, peers)
+	return r.GetServer().ChangeConfig(ctx, added, removed)
 }

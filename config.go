@@ -155,7 +155,7 @@ type config interface {
 	// NewDecider 生成该配置的决策器
 	NewDecider() decider
 	// GenJointConfig 根据 add peers 与 remove peers 生成 joint consensus configuration
-	GenJointConfig(add []RaftPeer, remove []RaftPeer) config
+	GenJointConfig(add []RaftPeer, remove []RaftId) config
 	// SetIndex set i to config' log entry index
 	// 只能设置一次
 	SetIndex(i uint64)
@@ -163,6 +163,8 @@ type config interface {
 	Bytes() ([]byte, error)
 	// NewCommitCalc
 	NewCommitCalc() commitCalc
+	// CreateNewConfig
+	CreateNewConfig() (config, error)
 }
 
 var zeroConfig config = &configImpl{}
@@ -217,8 +219,25 @@ func (c *configImpl) NewCommitCalc() commitCalc {
 }
 
 // GenJointConfig 根据 add peers 与 remove peers 生成 joint consensus configuration
-func (c *configImpl) GenJointConfig(add []RaftPeer, remove []RaftPeer) config {
-	// TODO:
+func (c *configImpl) GenJointConfig(add []RaftPeer, remove []RaftId) config {
+	length := len(c.peersList)
+	peers := clonePeers(c.peersList[length-1])
+	for _, peer := range add {
+		if !includePeer(peers, peer) {
+			peers = append(peers, peer)
+		}
+	}
+	for _, id := range remove {
+		i := 0
+		for i < len(peers) {
+			if peers[i].Id == id {
+				peers[i] = peers[len(peers)-1]
+				peers = peers[:len(peers)-1]
+			} else {
+				i++
+			}
+		}
+	}
 	return nil
 }
 
@@ -234,6 +253,21 @@ func (c *configImpl) SetIndex(i uint64) {
 // Bytes
 func (c *configImpl) Bytes() ([]byte, error) {
 	return json.Marshal(c.peersList)
+}
+
+// CreateNewConfig
+func (c *configImpl) CreateNewConfig() (config, error) {
+	if !c.IsJoint() {
+		msg := "isn't joint config, can not create C(new)"
+		return nil, errors.New(msg)
+	}
+
+	length := len(c.peersList)
+	peers := clonePeers(c.peersList[length-1])
+	config := &configImpl{
+		peersList: [][]RaftPeer{peers},
+	}
+	return config, nil
 }
 
 // includePeer peers 中是否包含 peer

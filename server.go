@@ -56,8 +56,6 @@ type server interface {
 	ResetTimer()
 	// 是否是 Leader
 	IsLeader() bool
-	// AddPeers add peers to cluster
-	AddPeers(ctx context.Context, peers []RaftPeer) error
-	// RemovePeers remove peers from cluster
-	RemovePeers(ctx context.Context, peers []RaftId) error
+	// ChangeConfig add added and remove removed
+	ChangeConfig(ctx context.Context, added []RaftPeer, removed []RaftId) error
 }

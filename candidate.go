@@ -157,13 +157,3 @@ func (c *candidate) elect(peers []RaftPeer) (<-chan RaftId, error) {
 func (*candidate) IsLeader() bool {
 	return false
 }
-
-// AddPeers add peers to cluster
-func (*candidate) AddPeers(ctx context.Context, peers []RaftPeer) error {
-	return ErrIsNotLeader
-}
-
-// RemovePeers remove peers from cluster
-func (*candidate) RemovePeers(ctx context.Context, peers []RaftId) error {
-	return ErrIsNotLeader
-}

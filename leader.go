@@ -31,15 +31,29 @@ type leader struct {
 	noop int32
 
 	// ccm configuration changes mutext
-	ccm sync.Mutex
+	ccm *sync.Mutex
+
+	// jointCommitCond
+	jointCommitCond *sync.Cond
 }
 
 func (l *leader) Run() (server, error) {
-	// Upon election: Instead of sendding initial empty AppendEntries RPC
-	// (heartbeat) to each server, broadcasting no-op log entry
-	err := l.replicateNoop()
+	// Upon election: sendding initial empty AppendEntries RPC
+	// (heartbeat) to each server
+	err := l.sendHeartbeats()
 	if err != nil {
 		return nil, err
+	}
+
+	{
+		// append and broadcast no-op log entry
+		done := make(chan struct{})
+		defer close(done)
+		go l.loopTransiteToNewConfig(done)
+		err = l.replicateNoop()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	for {
@@ -351,6 +365,23 @@ func (l *leader) refreshCommitIndex() (bool, error) {
 		return false, nil
 	}
 	l.SetCommitIndex(nextCommitIndex)
+
+	// Once Cold,new has been committed, neither Cold nor Cnew
+	// can make decisions without approval of the other, and the
+	// Leader Completeness Property ensures that only servers
+	// with the Cold,new log entry can be elected as leader. It is
+	// now safe for the leader to create a log entry describing
+	// Cnew and replicate it to the cluster.
+	config := l.raft.configs.GetConfig()
+	if !config.IsJoint() {
+		return true, nil
+	}
+	pre := commitIndex
+	now := nextCommitIndex
+	index := config.GetIndex()
+	if index > pre && index <= now {
+		l.jointCommitCond.Signal()
+	}
 	return true, nil
 }
 
@@ -410,14 +441,14 @@ func (x uint64Slice) Len() int           { return len(x) }
 func (x uint64Slice) Less(i, j int) bool { return x[i] < x[j] }
 func (x uint64Slice) Swap(i, j int)      { x[i], x[j] = x[j], x[i] }
 
-// AddPeers add peers to cluster
-func (l *leader) AddPeers(ctx context.Context, peers []RaftPeer) error {
-	if len(peers) == 0 {
+// ChangeConfig add peers to cluster
+func (l *leader) ChangeConfig(ctx context.Context, add []RaftPeer, remove []RaftId) error {
+	if len(add)+len(remove) == 0 {
 		return nil
 	}
 
 	// non-voting phase
-	err := l.tryCatchupLeader(ctx, peers)
+	err := l.tryCatchupLeader(ctx, add)
 	if err != nil {
 		return err
 	}
@@ -427,7 +458,7 @@ func (l *leader) AddPeers(ctx context.Context, peers []RaftPeer) error {
 
 	// generate joint consensus configuration
 	config := l.raft.configs.GetConfig()
-	jointConfig := config.GenJointConfig(peers, nil)
+	jointConfig := config.GenJointConfig(add, remove)
 	// store the configuration for joint consensus as log entry
 	logEntry, err := l.configs.NewConfigLogEntry(
 		l.GetCurrentTerm(), jointConfig)
@@ -460,8 +491,6 @@ func (l *leader) AddPeers(ctx context.Context, peers []RaftPeer) error {
 		// FIXME:
 		panic("refresh commit index failed")
 	}
-	//  TODO:
-
 	return nil
 }
 
@@ -527,8 +556,63 @@ func (l *leader) tryCatchupLeader(ctx context.Context, peers []RaftPeer) error {
 	return <-errCh
 }
 
-// RemovePeers remove peers from cluster
-func (l *leader) RemovePeers(ctx context.Context, peers []RaftId) error {
-	// TODO:
+// loopTransiteToNewConfig wait for transitting from C(old,new) to C(new)
+func (l *leader) loopTransiteToNewConfig(done <-chan struct{}) {
+	for {
+		select {
+		case <-done:
+			return
+		case <-l.Done():
+			return
+		default:
+			// no-op
+		}
+
+		func() {
+			l.jointCommitCond.L.Lock()
+			defer l.jointCommitCond.L.Unlock()
+
+			config := l.configs.GetConfig()
+			for !config.IsJoint() {
+				l.jointCommitCond.Wait()
+				config = l.configs.GetConfig()
+			}
+			err := l.transiteToNewConfig()
+			if err != nil {
+				l.debug("transite to C(new) failed, err: %v", err)
+			}
+		}()
+	}
+}
+
+// transiteToNewConfig transite to C(new)
+func (l *leader) transiteToNewConfig() error {
+	config := l.raft.configs.GetConfig()
+	newConfig, err := config.CreateNewConfig()
+	if err != nil {
+		return err
+	}
+
+	logEntry, err := l.configs.NewConfigLogEntry(l.GetCurrentTerm(), newConfig)
+	if err != nil {
+		return err
+	}
+	index, err := l.Log.AppendEntry(*logEntry)
+	if err != nil {
+		return err
+	}
+	newConfig.SetIndex(index)
+	err = l.raft.configs.UseConfig(newConfig)
+	if err != nil {
+		return err
+	}
+	err = l.replicateToAll(context.Background())
+	if err != nil {
+		return err
+	}
+	_, err = l.refreshCommitIndex()
+	if err != nil {
+		return err
+	}
 	return nil
 }
