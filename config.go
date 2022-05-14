@@ -165,6 +165,8 @@ type config interface {
 	NewCommitCalc() commitCalc
 	// CreateNewConfig
 	CreateNewConfig() (config, error)
+	// IncludePeer
+	IncludePeer(id RaftId) bool
 }
 
 var zeroConfig config = &configImpl{}
@@ -268,6 +270,12 @@ func (c *configImpl) CreateNewConfig() (config, error) {
 		peersList: [][]RaftPeer{peers},
 	}
 	return config, nil
+}
+
+// IncludePeer
+func (c *configImpl) IncludePeer(id RaftId) bool {
+	peers := c.GetPeers()
+	return includePeer(peers, RaftPeer{Id: id})
 }
 
 // includePeer peers 中是否包含 peer

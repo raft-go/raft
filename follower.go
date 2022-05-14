@@ -23,6 +23,9 @@ func (f *follower) Run() (server, error) {
 				return server, nil
 			}
 		case <-f.ticker.C:
+			if !f.raft.configs.GetConfig().IncludePeer(f.Id()) {
+				continue
+			}
 			f.debug("Election timeout")
 			// If election timeout elapses without receiving AppendEntries
 			// 	 RPC from current leader or granting vote to candidate:

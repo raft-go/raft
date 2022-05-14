@@ -35,6 +35,9 @@ type leader struct {
 
 	// jointCommitCond
 	jointCommitCond *sync.Cond
+
+	// stepDown wether or not been stepped down
+	stepDown int32
 }
 
 func (l *leader) Run() (server, error) {
@@ -69,6 +72,12 @@ func (l *leader) Run() (server, error) {
 				return server, nil
 			}
 		case <-l.ticker.C:
+			// the leader steps down (returns to follower state)
+			if atomic.LoadInt32(&l.stepDown) != 0 {
+				l.debug("Stepped down, convert to follower...")
+				return l.toFollower(l.GetCurrentTerm())
+			}
+
 			// repeat during idle periods to
 			// prevent election timeouts (§5.2)
 			err := l.sendHeartbeats()
@@ -614,5 +623,13 @@ func (l *leader) transiteToNewConfig() error {
 	if err != nil {
 		return err
 	}
+
+	// if leader is not in the new configuration,
+	// the leader steps down (returns to follower state)
+	// once it has committed the Cnew log entry.
+	if !newConfig.IncludePeer(l.Id()) {
+		atomic.SwapInt32(&l.stepDown, 1)
+	}
+
 	return nil
 }
