@@ -167,10 +167,14 @@ func (l *leader) sendHeartbeats() error {
 	var wg sync.WaitGroup
 	config := l.raft.configs.GetConfig()
 	for _, peer := range config.GetPeers() {
-		addr := peer.Addr
+		id, addr := peer.Id, peer.Addr
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			if id == l.Id() {
+				l.refreshLastHeartbeat()
+				return
+			}
 			// empty args
 			var args = AppendEntriesArgs{
 				Term:     l.GetCurrentTerm(),
