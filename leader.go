@@ -447,6 +447,18 @@ func (m *raftIdIndexMap) Range(fn func(id RaftId, index uint64) bool) {
 	}
 }
 
+// neaten remove unused index
+func (m *raftIdIndexMap) neaten(usedPeers []RaftPeer) {
+	m.mux.Lock()
+	defer m.mux.Unlock()
+
+	for id := range m.m {
+		if !includePeer(usedPeers, RaftPeer{Id: id}) {
+			delete(m.m, id)
+		}
+	}
+}
+
 // uint64Slice attaches the methods of Interface to []uint64, sorting in increasing order.
 type uint64Slice []uint64
 
@@ -633,7 +645,12 @@ func (l *leader) transiteToNewConfig() error {
 	// once it has committed the Cnew log entry.
 	if !newConfig.IncludePeer(l.Id()) {
 		atomic.SwapInt32(&l.stepDown, 1)
+		return nil
 	}
 
+	// remove unused index
+	peers := newConfig.GetPeers()
+	l.nextIndex.neaten(peers)
+	l.matchIndex.neaten(peers)
 	return nil
 }
