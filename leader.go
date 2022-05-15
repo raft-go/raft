@@ -115,7 +115,7 @@ func (l *leader) Handle(ctx context.Context, cmd ...Command) error {
 		return err
 	}
 	if !ok {
-		return nil
+		panic("refresh commit index failed")
 	}
 
 	return l.applyCommitted()
@@ -217,11 +217,11 @@ func (l *leader) replicateToAll(ctx context.Context) error {
 
 // replicate replicate log entries to specify peer
 func (l *leader) replicate(id RaftId, addr RaftAddr) (success bool, err error) {
+	lastLogIndex, _, err := l.Last()
+	if err != nil {
+		return false, err
+	}
 	if l.Id() == id {
-		lastLogIndex, _, err := l.Last()
-		if err != nil {
-			return false, err
-		}
 		netxIndex := lastLogIndex + 1
 		l.nextIndex.Store(id, netxIndex)
 		matchIndex := lastLogIndex
@@ -229,7 +229,10 @@ func (l *leader) replicate(id RaftId, addr RaftAddr) (success bool, err error) {
 		return true, nil
 	}
 
-	nextIndex, _ := l.nextIndex.Load(id)
+	nextIndex, ok := l.nextIndex.Load(id)
+	if !ok {
+		nextIndex = lastLogIndex + 1
+	}
 	prevLogIndex := nextIndex - 1
 	prevLogTerm, err := l.Get(prevLogIndex)
 	if err != nil {

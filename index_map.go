@@ -1,6 +1,9 @@
 package raft
 
-import "sync"
+import (
+	"fmt"
+	"sync"
+)
 
 // raftIdIndexMap used for leader's matchIndex and nextIndex
 type raftIdIndexMap struct {
@@ -54,4 +57,11 @@ func (m *raftIdIndexMap) neaten(usedPeers []RaftPeer) {
 			delete(m.m, id)
 		}
 	}
+}
+
+// String
+func (m *raftIdIndexMap) String() string {
+	m.mux.Lock()
+	defer m.mux.Unlock()
+	return fmt.Sprintf("%+v", m.m)
 }
