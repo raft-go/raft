@@ -322,13 +322,19 @@ var _ RPC = (*defaultRPC)(nil)
 type defaultRPC struct {
 	id RaftId
 
-	l      net.Listener
+	// protect l
+	mux sync.Mutex
+	l   net.Listener
+
 	server *rpc.Server
 
 	clients rpcClients
 }
 
 func (r *defaultRPC) Listen(addr string) error {
+	r.mux.Lock()
+	defer r.mux.Unlock()
+
 	var err error
 	r.l, err = net.Listen("tcp", addr)
 	if err != nil {
@@ -346,6 +352,9 @@ func (r *defaultRPC) Register(service RPCService) error {
 }
 
 func (r *defaultRPC) Close() error {
+	r.mux.Lock()
+	defer r.mux.Unlock()
+
 	closes := []func() error{
 		r.l.Close,
 		r.clients.Close,
