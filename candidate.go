@@ -23,41 +23,39 @@ func (c *candidate) Run() (server, error) {
 	decider := config.NewDecider()
 
 	for {
-		for ok := true; ok; {
-			select {
-			case <-c.Done():
-				return nil, ErrStopped
-			case args := <-c.rpcArgs:
-				server, converted, err := c.reactToRPCArgs(args)
-				if err != nil {
-					return nil, err
-				}
-				if converted {
-					return server, nil
-				}
-			case <-c.ticker.C:
-				c.debug("Election timeout")
-				// If election timeout elapses:
-				//	start new election
-				return c.toCandidate(), nil
-			case voterId, ok := <-voteCh:
-				if !ok {
-					c.debug("Failed to win the election")
-					continue
-				}
+		select {
+		case <-c.Done():
+			return nil, ErrStopped
+		case args := <-c.rpcArgs:
+			server, converted, err := c.reactToRPCArgs(args)
+			if err != nil {
+				return nil, err
+			}
+			if converted {
+				return server, nil
+			}
+		case <-c.ticker.C:
+			c.debug("Election timeout")
+			// If election timeout elapses:
+			//	start new election
+			return c.toCandidate(), nil
+		case voterId, ok := <-voteCh:
+			if !ok {
+				c.debug("Failed to win the election")
+				voteCh = (<-chan RaftId)(nil)
+				continue
+			}
 
-				//  If votes received from
-				//  majority of servers: become leader
-				decider.AddVote(voterId)
-				if decider.HasAchievedMajority() {
-					c.debug("Achieved Majority vote(%v)", decider.Counts())
-					return c.toLeader()
-				}
+			//  If votes received from
+			//  majority of servers: become leader
+			decider.AddVote(voterId)
+			if decider.HasAchievedMajority() {
+				c.debug("Achieved Majority vote(%v)", decider.Counts())
+				return c.toLeader()
 			}
 		}
-
-		voteCh = (<-chan RaftId)(nil)
 	}
+
 }
 
 func (c *candidate) Handle(context.Context, ...Command) error {

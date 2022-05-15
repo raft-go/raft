@@ -41,7 +41,7 @@ func TestChangeConfig(t *testing.T) {
 	if err != nil {
 		t.Errorf("failed to remove raft peer")
 	}
-	time.Sleep(2 * time.Second)
+	time.Sleep(10 * time.Second)
 	follower := leader
 	leader, ok = cluster.getLeader()
 	if !ok {
@@ -52,6 +52,11 @@ func TestChangeConfig(t *testing.T) {
 		t.Errorf("failed to remove raft peer")
 	}
 	time.Sleep(2 * time.Second)
+	err = leader.ChangeConfig(context.Background(), nil, []RaftId{follower.Id()})
+	if err != nil {
+		t.Errorf("failed to remove raft peer")
+	}
+	time.Sleep(3 * time.Second)
 }
 
 func TestHandle(t *testing.T) {
