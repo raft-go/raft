@@ -14,11 +14,13 @@ type candidate struct {
 }
 
 func (c *candidate) Run() (server, error) {
-	var count int
-	voteCh, err := c.elect()
+	config := c.raft.configs.GetConfig()
+	peers := config.GetPeers()
+	voteCh, err := c.elect(peers)
 	if err != nil {
 		return nil, err
 	}
+	decider := config.NewDecider()
 
 	for {
 		for ok := true; ok; {
@@ -38,23 +40,23 @@ func (c *candidate) Run() (server, error) {
 				// If election timeout elapses:
 				//	start new election
 				return c.toCandidate(), nil
-			case _, ok = <-voteCh:
+			case voterId, ok := <-voteCh:
 				if !ok {
 					c.debug("Failed to win the election")
 					continue
 				}
 
-				count++
-				// • If votes received from
-				//   majority of servers: become leader
-				if count > len(c.peers)/2 {
-					c.debug("Achieved Majority vote(%d)", count)
+				//  If votes received from
+				//  majority of servers: become leader
+				decider.AddVote(voterId)
+				if decider.HasAchievedMajority() {
+					c.debug("Achieved Majority vote(%v)", decider.Counts())
 					return c.toLeader()
 				}
 			}
 		}
 
-		voteCh = (<-chan struct{})(nil)
+		voteCh = (<-chan RaftId)(nil)
 	}
 }
 
@@ -103,7 +105,7 @@ func (c *candidate) reactToRPCArgs(args rpcArgs) (server server, converted bool,
 // elect
 //
 // Send RequestVote RPCs to all other servers
-func (c *candidate) elect() (<-chan struct{}, error) {
+func (c *candidate) elect(peers []RaftPeer) (<-chan RaftId, error) {
 	lastLogIndex, lastLogTerm, err := c.Last()
 	if err != nil {
 		return nil, err
@@ -116,15 +118,15 @@ func (c *candidate) elect() (<-chan struct{}, error) {
 		LastLogTerm:  lastLogTerm,
 	}
 
-	voteCh := make(chan struct{}, len(c.peers))
+	voteCh := make(chan RaftId, len(peers))
 
 	go func() {
 		defer close(voteCh)
 		var wg sync.WaitGroup
-		for id, addr := range c.peers {
-			id, addr := id, addr
+		for _, peer := range peers {
+			id, addr := peer.Id, peer.Addr
 			if c.Id() == id {
-				voteCh <- struct{}{}
+				voteCh <- id
 				continue
 			}
 
@@ -140,7 +142,7 @@ func (c *candidate) elect() (<-chan struct{}, error) {
 				}
 				if results.VoteGranted {
 					c.debug("<- Vote up %s", id)
-					voteCh <- struct{}{}
+					voteCh <- id
 				} else {
 					c.debug("<- Vote down %s", id)
 				}

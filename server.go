@@ -56,4 +56,6 @@ type server interface {
 	ResetTimer()
 	// 是否是 Leader
 	IsLeader() bool
+	// ChangeConfig add added and remove removed
+	ChangeConfig(ctx context.Context, added []RaftPeer, removed []RaftId) error
 }

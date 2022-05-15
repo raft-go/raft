@@ -30,6 +30,13 @@ func WithLogger(logger Logger) OptFn {
 	}
 }
 
+// WithBootstrapAsLeader bootstrap raft consensus module as leader
+func WithBootstrapAsLeader() OptFn {
+	return func(o *opts) {
+		o.bootstrapAsLeader = true
+	}
+}
+
 func newOpts() *opts {
 	return &opts{
 		rpc:      newDefaultRpc(),
@@ -44,6 +51,8 @@ type opts struct {
 	rpc RPC
 	// election timeout duration
 	election [2]time.Duration
+	// bootsTrapAsLeader wether or not bootstrap as leader
+	bootstrapAsLeader bool
 
 	logger Logger
 }

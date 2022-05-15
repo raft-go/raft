@@ -169,6 +169,7 @@ type rpcService struct {
 // 	4. Append any new entries not already in the log
 // 	5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 func (s *rpcService) AppendEntries(args AppendEntriesArgs, results *AppendEntriesResults) error {
+	s.refreshLastHeartbeat()
 	s.raft.sendRPCArgs(args)
 	s.GetServer().ResetTimer()
 	defer func() {
@@ -194,13 +195,37 @@ func (s *rpcService) AppendEntries(args AppendEntriesArgs, results *AppendEntrie
 	// 		but different terms), delete the existing entry and all that follow it (§5.3)
 	// 	4. Append any new entries not already in the log
 	if len(args.Entries) > 0 {
-		err = s.PopAfter(args.PrevLogIndex)
+		err = s.raft.Log.AppendAfter(args.PrevLogIndex, args.Entries...)
 		if err != nil {
 			return err
 		}
-		err = s.Append(args.Entries...)
-		if err != nil {
-			return err
+
+		// fallback config if config log entry is delete
+		config := s.raft.configs.GetConfig()
+		for config.GetIndex() > args.PrevLogIndex {
+			err = s.raft.configs.FallbackConfig()
+			if err != nil {
+				return err
+			}
+			config = s.raft.configs.GetConfig()
+		}
+		// Once a given server adds the new configuration entry to its log,
+		// it uses that configuration for all future decisions
+		for i, entry := range args.Entries {
+			index := args.PrevLogIndex + uint64(i) + 1
+			if entry.Type == logEntryTypeConfig {
+				config, err := s.raft.configs.NewConfig(index, entry.Command)
+				if err != nil {
+					return err
+				}
+				s.raft.configs.UseConfig(config)
+
+				if config.IsJoint() {
+					s.raft.debug("~> C(old,new): %v", config)
+				} else {
+					s.raft.debug("~> C(new): %v", config)
+				}
+			}
 		}
 	}
 	// 	5. If leaderCommit > commitIndex,
@@ -224,6 +249,9 @@ func (s *rpcService) AppendEntries(args AppendEntriesArgs, results *AppendEntrie
 // 	4. Append any new entries not already in the log
 // 	5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 func (s *rpcService) RequestVote(args RequestVoteArgs, results *RequestVoteResults) error {
+	if s.isLeaderActive() {
+		return nil
+	}
 	// 加锁, 防止两个 term 相同
 	// 且比 currentTerm 大的节点同时获得投票
 	s.mu.Lock()

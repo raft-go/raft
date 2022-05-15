@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"net"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -17,13 +18,18 @@ var (
 )
 
 // New 实例化一个 raft 一致性模型
-func New(id RaftId, apply Apply, store Store, log Log, peers map[RaftId]RaftAddr, optFns ...OptFn) (Raft, error) {
+func New(id RaftId, addr RaftAddr, apply Apply, store Store, log Log, optFns ...OptFn) (Raft, error) {
 	opts := newOpts()
 	for _, fn := range optFns {
 		fn(opts)
 	}
 
 	state, err := newState(store)
+	if err != nil {
+		return nil, err
+	}
+
+	configs, err := newConfigManager(store)
 	if err != nil {
 		return nil, err
 	}
@@ -39,15 +45,17 @@ func New(id RaftId, apply Apply, store Store, log Log, peers map[RaftId]RaftAddr
 		serverAccessor: newServerAccessor(&sync.Mutex{}),
 
 		rpc:  opts.rpc,
-		addr: peers[id],
+		addr: addr,
 
 		commitCond: sync.NewCond(&sync.Mutex{}),
 		rpcArgs:    make(chan rpcArgs),
 
-		peers:           peers,
+		configs:         configs,
 		electionTimeout: opts.election,
 
 		logger: opts.logger,
+
+		bootstrapAsLeader: opts.bootstrapAsLeader,
 
 		done: make(chan struct{}),
 	}
@@ -63,6 +71,8 @@ func New(id RaftId, apply Apply, store Store, log Log, peers map[RaftId]RaftAddr
 type Raft interface {
 	// Id 获取 raft 一致性模型 id
 	Id() RaftId
+	// Addr 获取 raft 一致性模型 rpc addr
+	Addr() RaftAddr
 
 	// Run 启动 raft 一致性模型
 	Run() error
@@ -77,6 +87,9 @@ type Raft interface {
 	Handle(ctx context.Context, cmd ...Command) error
 	// IsLeader 是否是 Leader
 	IsLeader() bool
+
+	// ChangeConfig add added and remove removed
+	ChangeConfig(ctx context.Context, added []RaftPeer, removed []RaftId) error
 }
 
 // RaftId raft 一致性模型 id
@@ -113,18 +126,25 @@ type raft struct {
 	// set currentTerm = T, convert to follower (§5.1)
 	rpcArgs chan rpcArgs
 
-	// peers raft 节点
-	peers map[RaftId]RaftAddr
+	// cluster configuration
+	configs configManager
 	// electionTimeout
 	electionTimeout [2]time.Duration
 
 	// ticker heartbeat/election timer
 	ticker *time.Ticker
 
+	// lastHeartbeat last heartbeat's unix time (the number of milliseconds)
+	// help to show leaders' activity
+	lastHeartbeat int64
+
 	logger Logger
 
 	// whether or not already ran
 	ran int32
+
+	// wether or not bootstrap as leader
+	bootstrapAsLeader bool
 
 	// 表示一致性模型是否已停用
 	done chan struct{}
@@ -137,6 +157,42 @@ func (r *raft) init() (err error) {
 	timeout := r.randomElectionTimeout()
 	ticker := time.NewTicker(timeout)
 	r.ticker = ticker
+
+	if r.bootstrapAsLeader {
+		lastIndex, _, err := r.Log.Last()
+		if err != nil {
+			return err
+		}
+		if lastIndex == 0 {
+			// Instead, we recommend that the very first time a cluster is created,
+			// one server is initialized with a configuration entry as the first entry in its log.
+			// This configuration lists only that one server;
+			// it alone forms a majority of its configuration,
+			// so it can consider this configuration committed.
+			//
+			// Other servers from then on should be initialized with empty logs;
+			// they are added to the cluster and learn of the current configuration
+			// through the membership change mechanism.
+			peer := RaftPeer{r.Id(), r.Addr()}
+			config := newBootstrapAsLeaderConfig(peer)
+			entry, err := r.configs.NewConfigLogEntry(
+				r.GetCurrentTerm(), config)
+			if err != nil {
+				return err
+			}
+			index, err := r.Log.AppendEntry(*entry)
+			if err != nil {
+				return err
+			}
+			config.SetIndex(index)
+			err = r.configs.UseConfig(config)
+			if err != nil {
+				return err
+			}
+			r.SetCommitIndex(index)
+			r.debug("Will bootstrap as leader")
+		}
+	}
 
 	server, err := r.toFollower(r.GetCurrentTerm())
 	r.SetServer(server)
@@ -161,6 +217,10 @@ func (r *raft) Id() RaftId {
 	return r.id
 }
 
+func (r *raft) Addr() RaftAddr {
+	return r.addr
+}
+
 func (r *raft) Handle(ctx context.Context, cmd ...Command) error {
 	return r.GetServer().Handle(ctx, cmd...)
 }
@@ -179,7 +239,7 @@ func (r *raft) Run() (err error) {
 
 	go func() {
 		err := r.runRPC()
-		if err != nil {
+		if err != nil && !errors.Is(err, net.ErrClosed) {
 			r.debug("run rpc, err: %+v", err)
 			os.Exit(1)
 		}
@@ -196,6 +256,9 @@ func (r *raft) Run() (err error) {
 
 	for {
 		server, err := r.GetServer().Run()
+		if errors.Is(err, ErrStopped) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -285,7 +348,18 @@ func (r *raft) applyCommitted() error {
 	if err != nil {
 		return err
 	}
-	commands := newCommands(entries)
+
+	// apply command type log entries
+	var commandEntries []LogEntry
+	for i := range entries {
+		if entries[i].Type == logEntryTypeCommand {
+			commandEntries = append(commandEntries, entries[i])
+		}
+	}
+	if len(commandEntries) == 0 {
+		return nil
+	}
+	commands := newCommands(commandEntries)
 
 	// apply
 	appliedCount, err := r.apply(commands)
@@ -294,8 +368,17 @@ func (r *raft) applyCommitted() error {
 	}
 
 	// update lastApplied
-	lastApplied += uint64(appliedCount)
-	r.SetLastApplied(lastApplied)
+	var count uint64
+	for _, entry := range entries {
+		if entry.Type == logEntryTypeCommand {
+			appliedCount--
+		}
+		count++
+		if appliedCount == 0 {
+			break
+		}
+	}
+	r.SetLastApplied(lastApplied + count)
 	return nil
 }
 
@@ -381,8 +464,11 @@ func (r *raft) toCandidate() server {
 func (r *raft) toLeader() (server, error) {
 	defer r.debug("Convert to leader")
 
+	var mux sync.Mutex
 	server := &leader{
-		raft: r,
+		raft:            r,
+		ccm:             &mux,
+		jointCommitCond: sync.NewCond(&mux),
 	}
 
 	// Volatile state on leaders:
@@ -391,9 +477,11 @@ func (r *raft) toLeader() (server, error) {
 	if err != nil {
 		return nil, err
 	}
-	for raftId := range server.peers {
-		server.nextIndex.Store(raftId, lastLogIndex+1)
-		server.matchIndex.Store(raftId, 0)
+
+	peers := r.configs.GetConfig().GetPeers()
+	for _, peer := range peers {
+		server.nextIndex.Store(peer.Id, lastLogIndex+1)
+		server.matchIndex.Store(peer.Id, 0)
 	}
 
 	server.ResetTimer()
@@ -431,4 +519,34 @@ func (r *raft) who() string {
 	}
 
 	return fmt.Sprintf("[%s:%d:%d:%d:%s]", r.Id(), r.GetCurrentTerm(), r.GetCommitIndex(), r.GetLastApplied(), state)
+}
+
+// ChangeConfig add added and remove removed
+func (r *raft) ChangeConfig(ctx context.Context, added []RaftPeer, removed []RaftId) error {
+	if !r.GetServer().IsLeader() {
+		return ErrIsNotLeader
+	}
+
+	return r.GetServer().ChangeConfig(ctx, added, removed)
+}
+
+// refreshLastHeartbeat
+//
+// if a server receives a RequestVote
+// request within the minimum election timeout
+// of hearing from a current leader, it does not update its
+// term or grant its vote.
+func (r *raft) refreshLastHeartbeat() {
+	atomic.StoreInt64(&r.lastHeartbeat, time.Now().UnixMilli())
+}
+
+// isLeaderActive
+//
+// if a server receives a RequestVote
+// request within the minimum election timeout
+// of hearing from a current leader, it does not update its
+// term or grant its vote.
+func (r *raft) isLeaderActive() bool {
+	lastHeartbeatTime := time.UnixMilli(atomic.LoadInt64(&r.lastHeartbeat))
+	return time.Since(lastHeartbeatTime) < r.electionTimeout[0]
 }

@@ -10,6 +10,50 @@ import (
 	"time"
 )
 
+func TestChangeConfig(t *testing.T) {
+	peers := map[RaftId]RaftAddr{
+		"1": ":5010",
+		"2": ":5020",
+		"3": ":5030",
+		"4": ":5040",
+		"5": ":5050",
+		"6": ":5060",
+		"7": ":5070",
+	}
+	cluster := newCluster(t, peers)
+	defer cluster.Stop()
+	go func() {
+		err := cluster.Run()
+		if err != nil {
+			t.Error(err)
+		}
+	}()
+	cluster.waitLeaderShip()
+
+	time.Sleep(1 * time.Second)
+
+	leader, ok := cluster.getLeader()
+	if !ok {
+		t.Errorf("get leader failed")
+	}
+
+	err := leader.ChangeConfig(context.Background(), nil, []RaftId{leader.Id()})
+	if err != nil {
+		t.Errorf("failed to remove raft peer")
+	}
+	time.Sleep(2 * time.Second)
+	follower := leader
+	leader, ok = cluster.getLeader()
+	if !ok {
+		t.Errorf("get leader failed")
+	}
+	err = leader.ChangeConfig(context.Background(), []RaftPeer{{follower.Id(), follower.Addr()}}, nil)
+	if err != nil {
+		t.Errorf("failed to remove raft peer")
+	}
+	time.Sleep(2 * time.Second)
+}
+
 func TestHandle(t *testing.T) {
 	peers := map[RaftId]RaftAddr{
 		"1": ":5010",
@@ -21,6 +65,7 @@ func TestHandle(t *testing.T) {
 		"7": ":5070",
 	}
 	cluster := newCluster(t, peers)
+	defer cluster.Stop()
 	go func() {
 		err := cluster.Run()
 		if err != nil {
@@ -42,42 +87,6 @@ func TestHandle(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-
-	t.Run("check: append log entry", func(t *testing.T) {
-		var count int
-		for i := range cluster.agents {
-			agent := cluster.agents[i]
-			entries, err := agent.log.RangeGet(0, uint64(len(commands)))
-			if err != nil {
-				t.Error(err)
-			}
-
-			if len(entries) > len(commands) {
-				t.Errorf("expect <= %d, got > %d", len(commands), len(commands))
-			}
-			if len(entries) == 0 {
-				continue
-			}
-
-			for i := uint64(0); i < uint64(len(entries)); i++ {
-				command := commands[i]
-				if got := entries[i].Index; got != i+1 {
-					t.Errorf("expect entry index %d, got %d", i+1, got)
-				}
-				if got := entries[i].Command; bytes.Compare(got, command) != 0 {
-					t.Errorf("expect entry command: %q, got: %q", command, got)
-				}
-			}
-
-			if len(entries) == len(commands) {
-				count++
-			}
-		}
-		if len(commands) > 0 && count <= len(cluster.agents)/2 {
-			t.Errorf("expect majority raft node append command, but only %d/%d", count, len(cluster.agents))
-		}
-		t.Logf("append log entries to %d/%d raft node", count, len(cluster.agents))
-	})
 
 	t.Run("check: apply to state machine", func(t *testing.T) {
 		var count int
@@ -114,12 +123,16 @@ func newCluster(t *testing.T, peers map[RaftId]RaftAddr) *cluster {
 	var cluster = cluster{
 		t: t,
 	}
-	for id := range peers {
-		id := id
+	var once sync.Once
+	for id, addr := range peers {
+		id, addr := id, addr
 		agent := &agent{
 			t: t,
 		}
-		raft, err := New(id, agent.apply, &agent.store, &agent.log, peers)
+
+		var opts []OptFn
+		once.Do(func() { opts = append(opts, WithBootstrapAsLeader()) })
+		raft, err := agent.newRaft(id, addr, opts...)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -161,6 +174,26 @@ func (c *cluster) waitLeaderShip() {
 	}
 }
 
+func (c *cluster) getLeader() (raft Raft, ok bool) {
+	for i := range c.agents {
+		agent := c.agents[i]
+		if agent.raft.IsLeader() {
+			return agent.raft, true
+		}
+	}
+	return nil, false
+}
+
+func (c *cluster) getFollower() (raft Raft, ok bool) {
+	for i := range c.agents {
+		agent := c.agents[i]
+		if !agent.raft.IsLeader() {
+			return agent.raft, true
+		}
+	}
+	return nil, false
+}
+
 func (c *cluster) Run() error {
 	c.t.Helper()
 
@@ -174,6 +207,22 @@ func (c *cluster) Run() error {
 				once.Do(func() { errCh <- err })
 			}
 		}()
+	}
+	c.waitLeaderShip()
+
+	var leader Raft
+	var added = make([]RaftPeer, 0, len(c.agents)-1)
+	for _, agent := range c.agents {
+		if agent.raft.IsLeader() {
+			leader = agent.raft
+		} else {
+			raft := agent.raft
+			added = append(added, RaftPeer{Id: raft.Id(), Addr: raft.Addr()})
+		}
+	}
+	err := leader.ChangeConfig(context.Background(), added, nil)
+	if err != nil {
+		return err
 	}
 
 	return <-errCh
@@ -195,6 +244,10 @@ type agent struct {
 
 	mux     sync.Mutex
 	applied []Command
+}
+
+func (a *agent) newRaft(id RaftId, addr RaftAddr, opts ...OptFn) (Raft, error) {
+	return New(id, addr, a.apply, &a.store, &a.log, opts...)
 }
 
 func (a *agent) length() int {
