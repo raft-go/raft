@@ -327,10 +327,7 @@ func (l *leader) refreshCommitIndex() (bool, error) {
 	nextCommitIndex := calculator.Calc()
 
 	commitIndex := l.GetCommitIndex()
-	if nextCommitIndex < commitIndex {
-		return false, nil
-	}
-	if nextCommitIndex == commitIndex {
+	if nextCommitIndex <= commitIndex {
 		return true, nil
 	}
 
