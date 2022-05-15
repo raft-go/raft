@@ -78,11 +78,19 @@ func (l *memoryLog) Get(index uint64) (term uint64, err error) {
 
 // Match 是否有匹配上 term 与 index 的 log entry
 func (l *memoryLog) Match(index, term uint64) (bool, error) {
-	target, err := l.Get(index)
-	if err != nil {
-		return false, err
+	l.mux.Lock()
+	defer l.mux.Unlock()
+	if index == 0 {
+		return true, nil
 	}
 
+	index--
+	length := uint64(len(l.queue))
+	if length <= index {
+		return false, nil
+	}
+	entry := l.queue[index]
+	target := entry.Term
 	return term == target, nil
 }
 
@@ -127,10 +135,6 @@ func (l *memoryLog) RangeGet(i, j uint64) ([]LogEntry, error) {
 func (l *memoryLog) AppendAfter(afterIndex uint64, entries ...LogEntry) error {
 	l.mux.Lock()
 	defer l.mux.Unlock()
-
-	if afterIndex == uint64(len(l.queue)) {
-		return nil
-	}
 
 	// pop after
 	if afterIndex > uint64(len(l.queue)) {
