@@ -9,7 +9,7 @@ Implement [raft consensus protocol](https://raft.github.io/raft.pdf) .
 
 - [X] Leader election
 - [X] Log replication
-- [ ] Membership changes (joint consensus instead of single-server changes)
+- [X] Membership changes (use joint consensus instead of single-server changes)
 - [ ] Log compaction
 
 # References
