@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"net"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -238,7 +239,7 @@ func (r *raft) Run() (err error) {
 
 	go func() {
 		err := r.runRPC()
-		if err != nil {
+		if err != nil && !errors.Is(err, net.ErrClosed) {
 			r.debug("run rpc, err: %+v", err)
 			os.Exit(1)
 		}
@@ -255,6 +256,9 @@ func (r *raft) Run() (err error) {
 
 	for {
 		server, err := r.GetServer().Run()
+		if errors.Is(err, ErrStopped) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}

@@ -219,6 +219,12 @@ func (s *rpcService) AppendEntries(args AppendEntriesArgs, results *AppendEntrie
 					return err
 				}
 				s.raft.configs.UseConfig(config)
+
+				if config.IsJoint() {
+					s.raft.debug("~> C(old,new): %v", config)
+				} else {
+					s.raft.debug("~> C(new): %v", config)
+				}
 			}
 		}
 	}
