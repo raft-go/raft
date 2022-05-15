@@ -418,3 +418,10 @@ func (c *commitCalcImpl) calcFor(peers []RaftPeer) uint64 {
 	mid := (len(matchIndex) - 1) / 2
 	return matchIndex[mid]
 }
+
+// uint64Slice attaches the methods of Interface to []uint64, sorting in increasing order.
+type uint64Slice []uint64
+
+func (x uint64Slice) Len() int           { return len(x) }
+func (x uint64Slice) Less(i, j int) bool { return x[i] < x[j] }
+func (x uint64Slice) Swap(i, j int)      { x[i], x[j] = x[j], x[i] }
