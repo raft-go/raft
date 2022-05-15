@@ -33,8 +33,6 @@ type LogEntryType uint8
 const (
 	// command log entry type for replicated state matchine
 	logEntryTypeCommand LogEntryType = iota
-	// no-op log entry type
-	logEntryTypeNoop
 	// cluster configuration changes log entry type
 	logEntryTypeConfig
 )

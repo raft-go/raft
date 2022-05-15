@@ -47,17 +47,10 @@ func (l *leader) Run() (server, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	{
-		// append and broadcast no-op log entry
-		done := make(chan struct{})
-		defer close(done)
-		go l.loopTransiteToNewConfig(done)
-		err = l.replicateNoop()
-		if err != nil {
-			return nil, err
-		}
-	}
+	// wait to transite to C(new)
+	done := make(chan struct{})
+	defer close(done)
+	go l.loopTransiteToNewConfig(done)
 
 	for {
 		select {
@@ -126,38 +119,6 @@ func (l *leader) Handle(ctx context.Context, cmd ...Command) error {
 	}
 
 	return l.applyCommitted()
-}
-
-// replicateNoop broadcast no-op log entry
-//
-// 1. Pledge of leadership
-// 2. Ensure that the  cluster configuration of pre term is broadcast as soon as possible
-func (l *leader) replicateNoop() error {
-	if atomic.SwapInt32(&l.noop, 1) != 0 {
-		return nil
-	}
-	entry := LogEntry{
-		Term:       l.GetCurrentTerm(),
-		Type:       logEntryTypeNoop,
-		AppendTime: time.Now(),
-	}
-	err := l.Log.Append(entry)
-	if err != nil {
-		return err
-	}
-	err = l.replicateToAll(context.Background())
-	if err != nil {
-		return err
-	}
-	ok, err := l.refreshCommitIndex()
-	if err != nil {
-		return err
-	}
-	if !ok {
-		// FIXME:
-		return nil
-	}
-	return nil
 }
 
 func (l *leader) sendHeartbeats() error {
@@ -265,7 +226,7 @@ func (l *leader) replicate(id RaftId, addr RaftAddr) (success bool, err error) {
 		l.nextIndex.Store(id, netxIndex)
 		matchIndex := lastLogIndex
 		l.matchIndex.Store(id, matchIndex)
-		return false, nil
+		return true, nil
 	}
 
 	nextIndex, _ := l.nextIndex.Load(id)
@@ -502,6 +463,7 @@ func (l *leader) ChangeConfig(ctx context.Context, add []RaftPeer, remove []Raft
 	if err != nil {
 		return err
 	}
+	l.debug("~> C(old,new): %s", jointConfig)
 	// replicates log entry
 	err = l.replicateToAll(ctx)
 	if err != nil {
@@ -640,6 +602,7 @@ func (l *leader) transiteToNewConfig() error {
 		return err
 	}
 
+	l.debug("~> C(new): %s", newConfig)
 	// if leader is not in the new configuration,
 	// the leader steps down (returns to follower state)
 	// once it has committed the Cnew log entry.

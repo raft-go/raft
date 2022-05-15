@@ -142,6 +142,10 @@ func (*configManagerImpl) marshal(configs []config) ([]byte, error) {
 }
 
 func (*configManagerImpl) unmarshal(b []byte, configs *[]config) error {
+	if len(b) == 0 {
+		return nil
+	}
+
 	return json.Unmarshal(b, configs)
 }
 
@@ -168,6 +172,8 @@ type config interface {
 	CreateNewConfig() (config, error)
 	// IncludePeer
 	IncludePeer(id RaftId) bool
+	// String
+	String() string
 }
 
 var zeroConfig config = &configImpl{}
@@ -247,7 +253,10 @@ func (c *configImpl) GenJointConfig(add []RaftPeer, remove []RaftId) config {
 			}
 		}
 	}
-	return nil
+	peersList := append(c.peersList, peers)
+	return &configImpl{
+		peersList: peersList,
+	}
 }
 
 // SetIndex set i to config' log entry index
@@ -277,6 +286,12 @@ func (c *configImpl) CreateNewConfig() (config, error) {
 		peersList: [][]RaftPeer{peers},
 	}
 	return config, nil
+}
+
+// String
+func (c *configImpl) String() string {
+	format := `{index: %d, peersList: %v}`
+	return fmt.Sprintf(format, c.index, c.peersList)
 }
 
 // IncludePeer
