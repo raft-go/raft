@@ -27,9 +27,6 @@ type leader struct {
 	// once resetTimer
 	once sync.Once
 
-	// noop for send no-op entry just once
-	noop int32
-
 	// ccm configuration changes mutext
 	ccm *sync.Mutex
 
