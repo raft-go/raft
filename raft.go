@@ -18,7 +18,7 @@ var (
 )
 
 // New 实例化一个 raft 一致性模型
-func New(id RaftId, addr RaftAddr, apply Apply, store Store, log Log, optFns ...OptFn) (Raft, error) {
+func New(id RaftId, addr RaftAddr, sm StateMachine, store Store, log Log, optFns ...OptFn) (Raft, error) {
 	opts := newOpts()
 	for _, fn := range optFns {
 		fn(opts)
@@ -39,8 +39,6 @@ func New(id RaftId, addr RaftAddr, apply Apply, store Store, log Log, optFns ...
 
 		state: state,
 		Log:   log,
-
-		apply: apply,
 
 		serverAccessor: newServerAccessor(&sync.Mutex{}),
 
@@ -73,6 +71,8 @@ type Raft interface {
 	Id() RaftId
 	// Addr 获取 raft 一致性模型 rpc addr
 	Addr() RaftAddr
+	// IsLeader 是否是 Leader
+	IsLeader() bool
 
 	// Run 启动 raft 一致性模型
 	Run() error
@@ -85,8 +85,6 @@ type Raft interface {
 	//
 	// append log entry --> log replication --> apply to state matchine
 	Handle(ctx context.Context, cmd ...Command) error
-	// IsLeader 是否是 Leader
-	IsLeader() bool
 
 	// ChangeConfig add added and remove removed
 	ChangeConfig(ctx context.Context, added []RaftPeer, removed []RaftId) error
@@ -111,7 +109,7 @@ type raft struct {
 	state
 	Log
 
-	apply Apply
+	sm StateMachine
 
 	serverAccessor
 
@@ -328,10 +326,6 @@ func (r *raft) syncLeaderCommit(leaderCommit uint64) error {
 	return nil
 }
 
-// Apply 依序应用 commands 到状态机中
-// 返回 应用的 Command 数量 appliedCount
-type Apply func(commands Commands) (appliedCount int, err error)
-
 // applyCommitted
 //
 // Implementation:
@@ -359,10 +353,19 @@ func (r *raft) applyCommitted() error {
 	if len(commandEntries) == 0 {
 		return nil
 	}
-	commands := newCommands(commandEntries)
-
+	var commands = make([]CommandLogEntry, 0, len(entries))
+	for i := range commandEntries {
+		if commandEntries[i].Type == logEntryTypeCommand {
+			entry := commandEntries[i]
+			commands = append(commands, CommandLogEntry{
+				Index:   entry.Index,
+				Term:    entry.Term,
+				Command: entry.Command,
+			})
+		}
+	}
 	// apply
-	appliedCount, err := r.apply(commands)
+	appliedCount, err := r.sm.Apply(commands...)
 	if err != nil {
 		return err
 	}
