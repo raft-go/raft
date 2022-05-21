@@ -133,7 +133,7 @@ func (c *candidate) elect(peers []RaftPeer) (<-chan RaftId, error) {
 				defer wg.Done()
 
 				c.debug("-> Request a vote %s", id)
-				results, err := c.rpc.CallRequestVote(addr, args)
+				results, err := c.rpcClients.CallRequestVote(context.Background(), addr, &args)
 				if err != nil {
 					c.debug("Call %s's RequestVote, err: %+v", id, err)
 					return

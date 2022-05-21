@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+option go_package  = "github.com/mind1949/raft";
+
+enum logEntryType {
+    // command log entry type for replicated state matchine
+    command = 0;
+    // cluster configuration changes log entry type
+    config = 1;
+}

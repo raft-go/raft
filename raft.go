@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	grpc "google.golang.org/grpc"
 )
 
 var (
@@ -42,7 +44,8 @@ func New(id RaftId, addr RaftAddr, sm StateMachine, store Store, log Log, optFns
 
 		serverAccessor: newServerAccessor(&sync.Mutex{}),
 
-		rpc:  opts.rpc,
+		sm: sm,
+
 		addr: addr,
 
 		commitCond: sync.NewCond(&sync.Mutex{}),
@@ -91,14 +94,10 @@ type Raft interface {
 }
 
 // RaftId raft 一致性模型 id
-type RaftId string
-
-func (id RaftId) isNil() bool {
-	return id == ""
-}
+type RaftId = string
 
 // RaftAddr raft 一致性模型 rpc 通信地址
-type RaftAddr string
+type RaftAddr = string
 
 var _ (Raft) = (*raft)(nil)
 
@@ -113,8 +112,9 @@ type raft struct {
 
 	serverAccessor
 
-	rpc  RPC
-	addr RaftAddr
+	addr       RaftAddr
+	rpcServer  *grpc.Server
+	rpcClients *rpcClients
 
 	// 通知 commitIndex 更新事件发生
 	commitCond *sync.Cond
@@ -149,8 +149,8 @@ type raft struct {
 }
 
 func (r *raft) init() (err error) {
-	rpc := newRpcWrapper(r, r.rpc)
-	r.rpc = rpc
+	r.rpcClients = newRpcClients(r)
+	r.rpcServer = grpc.NewServer()
 
 	timeout := r.randomElectionTimeout()
 	ticker := time.NewTicker(timeout)
@@ -197,18 +197,13 @@ func (r *raft) init() (err error) {
 	return err
 }
 
-func (r *raft) runRPC() error {
-	service := r.newRPCService()
-	err := r.rpc.Register(service)
+func (r *raft) runRPCServer() error {
+	ls, err := net.Listen("tcp", r.addr)
 	if err != nil {
 		return err
 	}
-
-	err = r.rpc.Listen(string(r.addr))
-	if err != nil {
-		return err
-	}
-	return r.rpc.Serve()
+	RegisterRPCServer(r.rpcServer, newRpcServer(r))
+	return r.rpcServer.Serve(ls)
 }
 
 func (r *raft) Id() RaftId {
@@ -236,13 +231,12 @@ func (r *raft) Run() (err error) {
 	rand.Seed(time.Now().UnixNano())
 
 	go func() {
-		err := r.runRPC()
+		err := r.runRPCServer()
 		if err != nil && !errors.Is(err, net.ErrClosed) {
 			r.debug("run rpc, err: %+v", err)
 			os.Exit(1)
 		}
 	}()
-	defer r.rpc.Close()
 
 	go r.loopApplyCommitted()
 
@@ -265,10 +259,21 @@ func (r *raft) Run() (err error) {
 }
 
 func (r *raft) Stop() {
+	select {
+	case _, ok := <-r.done:
+		if !ok {
+			return
+		}
+	default:
+		// no-op
+	}
+
 	close(r.done)
 	if r.ticker != nil {
 		r.ticker.Stop()
 	}
+	r.rpcServer.GracefulStop()
+	r.rpcClients.Close()
 	return
 }
 
@@ -344,25 +349,19 @@ func (r *raft) applyCommitted() error {
 	}
 
 	// apply command type log entries
-	var commandEntries []LogEntry
+	var commands = make([]CommandLogEntry, 0, len(entries))
 	for i := range entries {
 		if entries[i].Type == logEntryTypeCommand {
-			commandEntries = append(commandEntries, entries[i])
-		}
-	}
-	if len(commandEntries) == 0 {
-		return nil
-	}
-	var commands = make([]CommandLogEntry, 0, len(entries))
-	for i := range commandEntries {
-		if commandEntries[i].Type == logEntryTypeCommand {
-			entry := commandEntries[i]
+			entry := entries[i]
 			commands = append(commands, CommandLogEntry{
 				Index:   entry.Index,
 				Term:    entry.Term,
 				Command: entry.Command,
 			})
 		}
+	}
+	if len(commands) == 0 {
+		return nil
 	}
 	// apply
 	appliedCount, err := r.sm.Apply(commands...)
@@ -388,6 +387,9 @@ func (r *raft) applyCommitted() error {
 // sendRPCArgs
 // 发送待反应的 rpc Args
 func (r *raft) sendRPCArgs(args rpcArgs) {
+	if args == nil {
+		return
+	}
 	if args.getTerm() < r.GetCurrentTerm() {
 		return
 	}
@@ -415,12 +417,6 @@ func (r *raft) reactToRPCArgs(args rpcArgs) (server server, converted bool, err 
 		return server, true, nil
 	}
 	return nil, false, nil
-}
-
-func (r *raft) newRPCService() RPCService {
-	return &rpcService{
-		raft: r,
-	}
 }
 
 func (r *raft) toFollower(term uint64, votedFor ...RaftId) (server, error) {

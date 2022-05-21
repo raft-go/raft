@@ -35,16 +35,12 @@ type Log interface {
 	LastDequeueTo() (index, term uint64)
 }
 
-type LogEntryType uint8
-
 const (
-	// command log entry type for replicated state matchine
-	logEntryTypeCommand LogEntryType = iota
-	// cluster configuration changes log entry type
-	logEntryTypeConfig
+	logEntryTypeCommand = LogEntryType_command
+	logEntryTypeConfig  = LogEntryType_config
 )
 
-// LogEntry raft log entry
+// Entry raft log entry
 //	each entry contains command for state machine,
 //	and term when entry was received by leader (first index is 1)
 type LogEntry struct {
@@ -134,7 +130,8 @@ func (l *memoryLog) RangeGet(i, j uint64) ([]LogEntry, error) {
 	j--
 	var entries []LogEntry
 	for k := i + 1; k <= j && k < uint64(len(l.queue)); k++ {
-		entries = append(entries, l.queue[k])
+		entry := l.queue[k]
+		entries = append(entries, entry)
 	}
 	return entries, nil
 }
@@ -172,8 +169,8 @@ func (l *memoryLog) Append(entries ...LogEntry) error {
 	start := last + 1
 	for i := range entries {
 		entries[i].Index = start + uint64(i)
+		l.queue = append(l.queue, entries[i])
 	}
-	l.queue = append(l.queue, entries...)
 	return nil
 }
 

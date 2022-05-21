@@ -1,29 +1,12 @@
 package raft
 
 import (
+	"context"
 	"errors"
-	"net"
-	"net/http"
-	"net/rpc"
 	"sync"
+
+	grpc "google.golang.org/grpc"
 )
-
-// RPC raft rpc client and register
-type RPC interface {
-	Listen(addr string) error
-	Serve() error
-	Register(RPCService) error
-	Close() error
-
-	CallAppendEntries(addr RaftAddr, args AppendEntriesArgs) (AppendEntriesResults, error)
-	CallRequestVote(addr RaftAddr, args RequestVoteArgs) (RequestVoteResults, error)
-}
-
-// RPCService raft rpc service
-type RPCService interface {
-	AppendEntries(args AppendEntriesArgs, results *AppendEntriesResults) error
-	RequestVote(args RequestVoteArgs, results *RequestVoteResults) error
-}
 
 type rpcArgsType int8
 
@@ -31,8 +14,12 @@ const (
 	_ rpcArgsType = iota
 	rpcArgsTypeAppendEntriesArgs
 	rpcArgsTypeAppendEntriesResults
+
 	rpcArgsTypeRequestVoteArgs
 	rpcArgsTypeRequestVoteResults
+
+	rpcArgsTypeInstallSnapshotArgs
+	rpcArgsTypeInstallSnapshotResults
 )
 
 func (t rpcArgsType) String() string {
@@ -45,6 +32,10 @@ func (t rpcArgsType) String() string {
 		return "RequestVoteArgs"
 	case rpcArgsTypeRequestVoteResults:
 		return "RequestVoteResults"
+	case rpcArgsTypeInstallSnapshotArgs:
+		return "InstallSnapshotArgs"
+	case rpcArgsTypeInstallSnapshotResults:
+		return "InstallSnapshotResults"
 	default:
 		return "Unknown rpcArgsType"
 	}
@@ -56,102 +47,60 @@ type rpcArgs interface {
 	getTerm() uint64
 }
 
-var _ rpcArgs = AppendEntriesArgs{}
+var _ rpcArgs = (*AppendEntriesArgs)(nil)
 
-// AppendEntriesArgs
-type AppendEntriesArgs struct {
-	// leader’s term
-	Term uint64
-	// so follower can redirect clients
-	LeaderId RaftId
-
-	// index of log entry immediately preceding new ones
-	PrevLogIndex uint64
-	// term of prevLogIndex entry
-	PrevLogTerm uint64
-
-	// log entries to store (empty for heartbeat;
-	// may send more than one for efficiency)
-	Entries []LogEntry
-
-	// leader’s commitIndex
-	LeaderCommit uint64
-}
-
-func (AppendEntriesArgs) getType() rpcArgsType {
+func (*AppendEntriesArgs) getType() rpcArgsType {
 	return rpcArgsTypeAppendEntriesArgs
 }
 
-func (a AppendEntriesArgs) getTerm() uint64 {
+func (a *AppendEntriesArgs) getTerm() uint64 {
 	return a.Term
 }
 
-var _ rpcArgs = AppendEntriesResults{}
+var _ rpcArgs = (*AppendEntriesResults)(nil)
 
-// AppendEntriesResults
-type AppendEntriesResults struct {
-	// currentTerm
-	Term uint64
-	// for leader to update itself success true
-	// if follower contained entry matching
-	Success bool
-}
-
-func (AppendEntriesResults) getType() rpcArgsType {
+func (*AppendEntriesResults) getType() rpcArgsType {
 	return rpcArgsTypeAppendEntriesResults
 }
 
-func (a AppendEntriesResults) getTerm() uint64 {
+func (a *AppendEntriesResults) getTerm() uint64 {
 	return a.Term
 }
 
-var _ rpcArgs = RequestVoteArgs{}
+var _ rpcArgs = (*RequestVoteArgs)(nil)
 
-// RequestVoteArgs
-type RequestVoteArgs struct {
-	// term candidate’s term
-	Term uint64
-	// candidateId candidate requesting vote
-	CandidateId RaftId
-
-	// lastLogIndex index of candidate’s last log entry (§5.4)
-	LastLogIndex uint64
-	// lastLogTerm term of candidate’s last log entry (§5.4)
-	LastLogTerm uint64
-}
-
-func (RequestVoteArgs) getType() rpcArgsType {
+func (*RequestVoteArgs) getType() rpcArgsType {
 	return rpcArgsTypeRequestVoteArgs
 }
 
-func (a RequestVoteArgs) getTerm() uint64 {
+func (a *RequestVoteArgs) getTerm() uint64 {
 	return a.Term
 }
 
-var _ rpcArgs = RequestVoteResults{}
+var _ rpcArgs = (*RequestVoteResults)(nil)
 
-// RequestVoteResults
-type RequestVoteResults struct {
-	// currentTerm, for candidate to update itself
-	Term uint64
-	// true means candidate received vote
-	VoteGranted bool
-}
-
-func (RequestVoteResults) getType() rpcArgsType {
+func (*RequestVoteResults) getType() rpcArgsType {
 	return rpcArgsTypeRequestVoteResults
 }
 
-func (r RequestVoteResults) getTerm() uint64 {
+func (r *RequestVoteResults) getTerm() uint64 {
 	return r.Term
 }
 
-var _ RPCService = (*rpcService)(nil)
+var _ RPCServer = (*rpcServer)(nil)
 
-// rpcService
-type rpcService struct {
+func newRpcServer(r *raft) *rpcServer {
+	return &rpcServer{
+		raft: r,
+	}
+}
+
+// rpcServer
+type rpcServer struct {
 	mu sync.Mutex
 	*raft
+
+	UnimplementedRPCServer
 }
 
 // AppendEntries 实现 AppendEntries RPC
@@ -168,10 +117,12 @@ type rpcService struct {
 // 		but different terms), delete the existing entry and all that follow it (§5.3)
 // 	4. Append any new entries not already in the log
 // 	5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
-func (s *rpcService) AppendEntries(args AppendEntriesArgs, results *AppendEntriesResults) error {
+func (s *rpcServer) AppendEntries(ctx context.Context, args *AppendEntriesArgs) (results *AppendEntriesResults, err error) {
 	s.refreshLastHeartbeat()
 	s.raft.sendRPCArgs(args)
 	s.GetServer().ResetTimer()
+
+	results = &AppendEntriesResults{}
 	defer func() {
 		results.Term = s.GetCurrentTerm()
 	}()
@@ -179,25 +130,36 @@ func (s *rpcService) AppendEntries(args AppendEntriesArgs, results *AppendEntrie
 	currentTerm := s.GetCurrentTerm()
 	// 1. Reply false if term < currentTerm (§5.1)
 	if args.Term < currentTerm {
-		return nil
+		return results, nil
 	}
 	// 	2. Reply false if log doesn’t contain an entry at prevLogIndex
 	// 		whose term matches prevLogTerm (§5.3)
 	match, err := s.Match(args.PrevLogIndex, args.PrevLogTerm)
 	if err != nil {
-		return err
+		return results, err
 	}
 	if !match {
-		return nil
+		return results, nil
 	}
 	results.Success = true
 	// 	3. If an existing entry conflicts with a new one (same index
 	// 		but different terms), delete the existing entry and all that follow it (§5.3)
 	// 	4. Append any new entries not already in the log
 	if len(args.Entries) > 0 {
-		err = s.raft.Log.AppendAfter(args.PrevLogIndex, args.Entries...)
+		entries := make([]LogEntry, 0, len(args.Entries))
+		for i := range args.Entries {
+			entry := args.Entries[i]
+			entries = append(entries, LogEntry{
+				Index:      entry.Index,
+				Term:       entry.Term,
+				Type:       entry.Type,
+				Command:    entry.Command,
+				AppendTime: entry.AppendTime.AsTime(),
+			})
+		}
+		err = s.raft.Log.AppendAfter(args.PrevLogIndex, entries...)
 		if err != nil {
-			return err
+			return results, err
 		}
 
 		// fallback config if config log entry is delete
@@ -205,7 +167,7 @@ func (s *rpcService) AppendEntries(args AppendEntriesArgs, results *AppendEntrie
 		for config.GetIndex() > args.PrevLogIndex {
 			err = s.raft.configs.FallbackConfig()
 			if err != nil {
-				return err
+				return results, err
 			}
 			config = s.raft.configs.GetConfig()
 		}
@@ -216,7 +178,7 @@ func (s *rpcService) AppendEntries(args AppendEntriesArgs, results *AppendEntrie
 			if entry.Type == logEntryTypeConfig {
 				config, err := s.raft.configs.NewConfig(index, entry.Command)
 				if err != nil {
-					return err
+					return results, err
 				}
 				s.raft.configs.UseConfig(config)
 
@@ -232,7 +194,7 @@ func (s *rpcService) AppendEntries(args AppendEntriesArgs, results *AppendEntrie
 	//		set commitIndex = min(leaderCommit, index of last new entry)
 	s.syncLeaderCommit(args.LeaderCommit)
 
-	return nil
+	return results, nil
 }
 
 // RequestVote 实现 RequestVote RPC
@@ -248,9 +210,10 @@ func (s *rpcService) AppendEntries(args AppendEntriesArgs, results *AppendEntrie
 // 		but different terms), delete the existing entry and all that follow it (§5.3)
 // 	4. Append any new entries not already in the log
 // 	5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
-func (s *rpcService) RequestVote(args RequestVoteArgs, results *RequestVoteResults) error {
+func (s *rpcServer) RequestVote(ctx context.Context, args *RequestVoteArgs) (results *RequestVoteResults, err error) {
+	results = &RequestVoteResults{}
 	if s.isLeaderActive() {
-		return nil
+		return results, nil
 	}
 	// 加锁, 防止两个 term 相同
 	// 且比 currentTerm 大的节点同时获得投票
@@ -264,7 +227,7 @@ func (s *rpcService) RequestVote(args RequestVoteArgs, results *RequestVoteResul
 		results.Term = s.GetCurrentTerm()
 		if results.VoteGranted {
 			s.debug("-> Vote up %s at %d", args.CandidateId, args.Term)
-			s.SetVotedFor(args.CandidateId)
+			s.SetVotedFor(RaftId(args.CandidateId))
 		} else {
 			s.debug("-> Vote down %s at %d", args.CandidateId, args.Term)
 		}
@@ -273,14 +236,14 @@ func (s *rpcService) RequestVote(args RequestVoteArgs, results *RequestVoteResul
 	// 	1. Reply false if term < currentTerm (§5.1)
 	currentTerm := s.GetCurrentTerm()
 	if args.Term < currentTerm {
-		return nil
+		return results, nil
 	}
 	// 	2. If votedFor is null or candidateId, and candidate’s log is at
 	// 		least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
 	votedFor := s.GetVotedFor()
 	if currentTerm == args.Term {
-		if !(votedFor.isNil() || args.CandidateId == votedFor) {
-			return nil
+		if !(votedFor == "" || RaftId(args.CandidateId) == votedFor) {
+			return results, nil
 		}
 	}
 
@@ -295,180 +258,112 @@ func (s *rpcService) RequestVote(args RequestVoteArgs, results *RequestVoteResul
 	// more up-to-date.
 	index, term, err := s.Last()
 	if err != nil {
-		return err
+		return results, err
 	}
 	if term < args.LastLogTerm {
 		results.VoteGranted = true
-		return nil
+		return results, nil
 	}
 	if term == args.LastLogTerm && index <= args.LastLogIndex {
 		results.VoteGranted = true
-		return nil
+		return results, nil
 	}
 
-	return nil
+	return results, nil
 }
 
-func newDefaultRpc() *defaultRPC {
-	rpc := &defaultRPC{
-		server: rpc.NewServer(),
+// InstallSnapshot
+//
+// Invoked by leader to send chunks of a snapshot to a follower.
+// Leaders always send chunks in order.
+//
+// Receiver implementation:
+// 4. Reply and wait for more data chunks if done is false
+// 5. Save snapshot file, discard any existing or partial snapshot
+// with a smaller index
+// 6. If existing log entry has same index and term as snapshot’s
+// last included entry, retain log entries following it and reply
+// 7. Discard the entire log
+// 8. Reset state machine using snapshot contents (and load
+// snapshot’s cluster configuration)
+func (s *rpcServer) InstallSnapshot(args RPC_InstallSnapshotServer) error {
+	// TODO:
+	return errors.New("not implement")
+}
+
+func newRpcClients(raft *raft) *rpcClients {
+	return &rpcClients{
+		raft:    raft,
+		clients: make(map[string]RPCClient),
 	}
-	return rpc
 }
 
-var _ RPC = (*defaultRPC)(nil)
-
-// defaultRPC
-type defaultRPC struct {
-	id RaftId
-
-	// protect l
-	mux sync.Mutex
-	l   net.Listener
-
-	server *rpc.Server
-
-	clients rpcClients
-}
-
-func (r *defaultRPC) Listen(addr string) error {
-	r.mux.Lock()
-	defer r.mux.Unlock()
-
-	var err error
-	r.l, err = net.Listen("tcp", addr)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func (r *defaultRPC) Serve() error {
-	return http.Serve(r.l, r.server)
-}
-
-func (r *defaultRPC) Register(service RPCService) error {
-	return r.server.RegisterName("raft", service)
-}
-
-func (r *defaultRPC) Close() error {
-	r.mux.Lock()
-	defer r.mux.Unlock()
-
-	closes := []func() error{
-		r.l.Close,
-		r.clients.Close,
-	}
-	for _, close := range closes {
-		_ = close()
-	}
-	return nil
-}
-
-func (r *defaultRPC) CallAppendEntries(addr RaftAddr, args AppendEntriesArgs) (results AppendEntriesResults, err error) {
-	client, err := r.clients.Get(addr)
-	if err != nil {
-		return results, err
-	}
-
-	err = client.Call("raft.AppendEntries", args, &results)
-	if errors.Is(err, net.ErrClosed) {
-		r.clients.Delete(addr)
-	}
-	return results, err
-}
-
-func (r *defaultRPC) CallRequestVote(addr RaftAddr, args RequestVoteArgs) (results RequestVoteResults, err error) {
-	client, err := r.clients.Get(addr)
-	if err != nil {
-		return results, err
-	}
-
-	err = client.Call("raft.RequestVote", args, &results)
-	if errors.Is(err, net.ErrClosed) {
-		r.clients.Delete(addr)
-	}
-	return results, err
-}
-
-// rpcClients reuse rpc.Client
+// rpcClients
 type rpcClients struct {
+	*raft
 	mux     sync.RWMutex
-	clients map[RaftAddr]*rpc.Client
-	closed  bool
+	clients map[string]RPCClient
+
+	conns []*grpc.ClientConn
 }
 
-func (c *rpcClients) Get(addr RaftAddr) (*rpc.Client, error) {
+func (c *rpcClients) getClient(ctx context.Context, addr RaftAddr) (RPCClient, error) {
 	c.mux.RLock()
-	if c.clients != nil {
-		client, ok := c.clients[addr]
-		if ok {
-			c.mux.RUnlock()
-			return client, nil
-		}
-	}
+	client, ok := c.clients[addr]
 	c.mux.RUnlock()
+	if ok {
+		return client, nil
+	}
 
 	c.mux.Lock()
 	defer c.mux.Unlock()
-	if c.clients == nil {
-		c.clients = make(map[RaftAddr]*rpc.Client)
-	}
-	client, err := rpc.DialHTTP("tcp", string(addr))
+	conn, err := grpc.DialContext(ctx, addr, grpc.WithInsecure())
 	if err != nil {
 		return nil, err
 	}
+	c.conns = append(c.conns, conn)
+	client = NewRPCClient(conn)
 	c.clients[addr] = client
 	return client, nil
-}
-
-func (c *rpcClients) Delete(addr RaftAddr) {
-	c.mux.Lock()
-	defer c.mux.Unlock()
-	if c.clients == nil {
-		c.clients = make(map[RaftAddr]*rpc.Client)
-	}
-	delete(c.clients, addr)
 }
 
 func (c *rpcClients) Close() error {
 	c.mux.Lock()
 	defer c.mux.Unlock()
-	if c.closed {
-		return nil
-	}
 
-	for _, client := range c.clients {
-		_ = client.Close()
+	for _, conn := range c.conns {
+		conn.Close()
 	}
-	c.clients = nil
-	defer func() { c.closed = true }()
 	return nil
 }
 
-var _ RPC = (*rpcWrapper)(nil)
-
-func newRpcWrapper(raft *raft, rpc RPC) *rpcWrapper {
-	return &rpcWrapper{
-		raft: raft,
-		RPC:  rpc,
+func (c *rpcClients) CallAppendEntries(ctx context.Context, addr RaftAddr, args *AppendEntriesArgs, opts ...grpc.CallOption) (results *AppendEntriesResults, err error) {
+	client, err := c.getClient(ctx, addr)
+	if err != nil {
+		return nil, err
 	}
-}
 
-// rpcWrapper
-type rpcWrapper struct {
-	*raft
-	RPC
-}
-
-func (w *rpcWrapper) CallAppendEntries(addr RaftAddr, args AppendEntriesArgs) (results AppendEntriesResults, err error) {
-	results, err = w.RPC.CallAppendEntries(addr, args)
-	w.raft.sendRPCArgs(results)
+	results, err = client.AppendEntries(ctx, args)
+	c.raft.sendRPCArgs(results)
 	return results, err
 }
 
-func (w *rpcWrapper) CallRequestVote(addr RaftAddr, args RequestVoteArgs) (results RequestVoteResults, err error) {
-	results, err = w.RPC.CallRequestVote(addr, args)
-	w.raft.sendRPCArgs(results)
+func (c *rpcClients) CallRequestVote(ctx context.Context, addr RaftAddr, args *RequestVoteArgs, opts ...grpc.CallOption) (results *RequestVoteResults, err error) {
+	client, err := c.getClient(ctx, addr)
+	if err != nil {
+		return nil, err
+	}
+
+	results, err = client.RequestVote(ctx, args)
+	c.raft.sendRPCArgs(results)
 	return results, err
+}
+
+func (c *rpcClients) CallInstallSnapshot(ctx context.Context, addr RaftAddr, opts ...grpc.CallOption) (results RPC_InstallSnapshotClient, err error) {
+	client, err := c.getClient(ctx, addr)
+	if err != nil {
+		return nil, err
+	}
+
+	return client.InstallSnapshot(ctx, opts...)
 }

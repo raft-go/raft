@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 )
 
 var _ server = (*leader)(nil)
@@ -138,7 +140,7 @@ func (l *leader) sendHeartbeats() error {
 				Term:     l.GetCurrentTerm(),
 				LeaderId: l.Id(),
 			}
-			l.rpc.CallAppendEntries(addr, args)
+			l.rpcClients.CallAppendEntries(context.Background(), addr, &args)
 		}()
 	}
 	wg.Wait()
@@ -262,11 +264,20 @@ func (l *leader) replicate(id RaftId, addr RaftAddr) (success bool, err error) {
 		LeaderId:     l.Id(),
 		PrevLogIndex: prevLogIndex,
 		PrevLogTerm:  prevLogTerm,
-		Entries:      entries,
 		LeaderCommit: l.GetCommitIndex(),
 	}
+	for i := range entries {
+		entry := entries[i]
+		args.Entries = append(args.Entries, &AppendEntriesArgsLogEntry{
+			Index:      entry.Index,
+			Term:       entry.Term,
+			Type:       entry.Type,
+			Command:    entry.Command,
+			AppendTime: timestamppb.New(entry.AppendTime),
+		})
+	}
 
-	results, err := l.rpc.CallAppendEntries(addr, args)
+	results, err := l.rpcClients.CallAppendEntries(context.Background(), addr, &args)
 	if err != nil {
 		l.debug("Call %s's AppendEntries, err: %+v", id, err)
 		return false, err

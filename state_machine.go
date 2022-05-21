@@ -35,7 +35,8 @@ type SnapshotReader interface {
 
 // SnapshotWriter raft snapshot writer
 type SnapshotWriter interface {
-	io.WriteCloser
+	io.WriterAt
+	io.Closer
 
 	// set last included index and term
 	//

@@ -252,7 +252,7 @@ type agent struct {
 }
 
 func (a *agent) newRaft(id RaftId, addr RaftAddr, opts ...OptFn) (Raft, error) {
-	return New(id, addr, a.apply, &a.store, &a.log, opts...)
+	return New(id, addr, a, &a.store, &a.log, opts...)
 }
 
 func (a *agent) length() int {
@@ -273,13 +273,28 @@ func (a *agent) append(cmd ...Command) {
 	a.applied = append(a.applied, cmd...)
 }
 
-func (a *agent) apply(commands Commands) (appliedCount int, err error) {
-	for i := range commands.Data() {
-		command := commands.Data()[i]
-		a.append(command)
+func (a *agent) Apply(commands ...CommandLogEntry) (appliedCount int, err error) {
+	for i := range commands {
+		command := commands[i]
+		a.append(command.Command)
 		appliedCount++
 	}
 	return
+}
+
+func (a *agent) WaitForLastPersisted() (index uint64) {
+	// TODO:
+	return 0
+}
+
+func (a *agent) GetSnapShotReader() (SnapshotReader, error) {
+	// TODO:
+	return nil, nil
+}
+
+func (a *agent) GetSnapShotWriter() (SnapshotWriter, error) {
+	// TODO:
+	return nil, nil
 }
 
 func (a *agent) Run() error {
