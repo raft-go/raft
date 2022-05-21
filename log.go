@@ -26,6 +26,13 @@ type Log interface {
 	Append(entries ...LogEntry) error
 	// AppendEntry 追加一个 log entry , 并返回索引
 	AppendEntry(entry LogEntry) (index uint64, err error)
+
+	// DequeueTo dequeue log entry to index
+	// and retain index and coressponding term(
+	// allows the AppendEntries consistency check to continue to work)
+	DequeueTo(index uint64) error
+	// LastDequeueTo get last dequeue to log entry index and term
+	LastDequeueTo() (index, term uint64)
 }
 
 type LogEntryType uint8
@@ -52,8 +59,9 @@ var _ Log = (*memoryLog)(nil)
 
 // memoryLog just for testing
 type memoryLog struct {
-	mux   sync.Mutex
-	queue []LogEntry
+	mux                               sync.Mutex
+	queue                             []LogEntry
+	lastDequeueIndex, lastDequeueTerm uint64
 }
 
 // Get 获取 raft log 中索引为 index 的 log entry term
@@ -181,4 +189,32 @@ func (l *memoryLog) AppendEntry(entry LogEntry) (index uint64, err error) {
 	entry.Index = last + 1
 	l.queue = append(l.queue, entry)
 	return entry.Index, nil
+}
+
+// DequeueTo dequeue log entry to index
+func (l *memoryLog) DequeueTo(index uint64) error {
+	l.mux.Lock()
+	defer l.mux.Unlock()
+
+	if len(l.queue) < int(index) {
+		return nil
+	}
+
+	l.lastDequeueIndex = index
+	entry := l.queue[index-1]
+	l.lastDequeueTerm = entry.Term
+
+	if len(l.queue) == int(index) {
+		l.queue = nil
+	} else {
+		l.queue = l.queue[index:]
+	}
+	return nil
+}
+
+func (l *memoryLog) LastDequeueTo() (index, term uint64) {
+	l.mux.Lock()
+	defer l.mux.Unlock()
+
+	return l.lastDequeueIndex, l.lastDequeueTerm
 }

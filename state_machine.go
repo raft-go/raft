@@ -9,9 +9,9 @@ type StateMachine interface {
 	Apply(commands ...CommandLogEntry) (appliedCount int, err error)
 
 	// WaitForLastPersisted
-	// wait for last log entry's index and term
+	// wait for last log entry's index
 	// that has been persisted for snapshotted
-	WaitForLastPersisted() (index, term uint64)
+	WaitForLastPersisted() (index uint64)
 
 	// GetSnapShotReader
 	// used to read snapshot and send to follower

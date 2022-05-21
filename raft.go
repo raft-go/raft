@@ -553,3 +553,21 @@ func (r *raft) isLeaderActive() bool {
 	lastHeartbeatTime := time.UnixMilli(atomic.LoadInt64(&r.lastHeartbeat))
 	return time.Since(lastHeartbeatTime) < r.electionTimeout[0]
 }
+
+// loopWaitForLastPersisted
+func (r *raft) loopWaitForLastPersisted() error {
+	for {
+		select {
+		case <-r.Done():
+			return nil
+		default:
+			// no-op
+		}
+
+		index := r.sm.WaitForLastPersisted()
+		err := r.Log.DequeueTo(index)
+		if err != nil {
+			r.debug("Dequeue to index: %d failed, err: %v", index, err)
+		}
+	}
+}
