@@ -267,10 +267,18 @@ func (r *raft) Run() (err error) {
 }
 
 func (r *raft) Stop() {
-	close(r.done)
+	select {
+	case <-r.done:
+		// Has already been stopped - no need to do anything
+		return
+	default:
+		// no-op
+	}
+
 	if r.ticker != nil {
 		r.ticker.Stop()
 	}
+	close(r.done)
 	return
 }
 
