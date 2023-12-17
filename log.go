@@ -38,6 +38,7 @@ const (
 )
 
 // LogEntry raft log entry
+//
 //	each entry contains command for state machine,
 //	and term when entry was received by leader (first index is 1)
 type LogEntry struct {

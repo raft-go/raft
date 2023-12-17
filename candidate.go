@@ -79,12 +79,12 @@ func (c *candidate) String() string {
 // • If AppendEntries RPC received from new leader: convert to follower
 //
 //	While waiting for votes, a candidate may receive an
-// 	AppendEntries RPC from another server claiming to be
-// 	leader. If the leader’s term (included in its RPC) is at least
-// 	as large as the candidate’s current term, then the candidate
-// 	recognizes the leader as legitimate and returns to follower
-// 	state. If the term in the RPC is smaller than the candidate’s
-// 	current term, then the candidate rejects the RPC and continues in candidate state.
+//	AppendEntries RPC from another server claiming to be
+//	leader. If the leader’s term (included in its RPC) is at least
+//	as large as the candidate’s current term, then the candidate
+//	recognizes the leader as legitimate and returns to follower
+//	state. If the term in the RPC is smaller than the candidate’s
+//	current term, then the candidate rejects the RPC and continues in candidate state.
 func (c *candidate) reactToRPCArgs(args rpcArgs) (server server, converted bool, err error) {
 	if args.getType() == rpcArgsTypeAppendEntriesArgs {
 		if args.getTerm() >= c.GetCurrentTerm() {

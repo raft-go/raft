@@ -157,17 +157,18 @@ type rpcService struct {
 // AppendEntries 实现 AppendEntries RPC
 //
 // Invoked by leader to replicate log entries (§5.3);
+//
 //	also used as heartbeat (§5.2).
 //
 // Implementation:
 //
-// 	1. Reply false if term < currentTerm (§5.1)
-// 	2. Reply false if log doesn’t contain an entry at prevLogIndex
-// 		whose term matches prevLogTerm (§5.3)
-// 	3. If an existing entry conflicts with a new one (same index
-// 		but different terms), delete the existing entry and all that follow it (§5.3)
-// 	4. Append any new entries not already in the log
-// 	5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+//  1. Reply false if term < currentTerm (§5.1)
+//  2. Reply false if log doesn’t contain an entry at prevLogIndex
+//     whose term matches prevLogTerm (§5.3)
+//  3. If an existing entry conflicts with a new one (same index
+//     but different terms), delete the existing entry and all that follow it (§5.3)
+//  4. Append any new entries not already in the log
+//  5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 func (s *rpcService) AppendEntries(args AppendEntriesArgs, results *AppendEntriesResults) error {
 	s.refreshLastHeartbeat()
 	s.raft.sendRPCArgs(args)
@@ -241,13 +242,13 @@ func (s *rpcService) AppendEntries(args AppendEntriesArgs, results *AppendEntrie
 //
 // implementation:
 //
-// 	1. Reply false if term < currentTerm (§5.1)
-// 	2. Reply false if log doesn’t contain an entry at prevLogIndex
-// 		whose term matches prevLogTerm (§5.3)
-// 	3. If an existing entry conflicts with a new one (same index
-// 		but different terms), delete the existing entry and all that follow it (§5.3)
-// 	4. Append any new entries not already in the log
-// 	5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+//  1. Reply false if term < currentTerm (§5.1)
+//  2. Reply false if log doesn’t contain an entry at prevLogIndex
+//     whose term matches prevLogTerm (§5.3)
+//  3. If an existing entry conflicts with a new one (same index
+//     but different terms), delete the existing entry and all that follow it (§5.3)
+//  4. Append any new entries not already in the log
+//  5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 func (s *rpcService) RequestVote(args RequestVoteArgs, results *RequestVoteResults) error {
 	if s.isLeaderActive() {
 		return nil

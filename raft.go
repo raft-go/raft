@@ -241,7 +241,7 @@ func (r *raft) Run() (err error) {
 		err := r.runRPC()
 		if err != nil && !errors.Is(err, net.ErrClosed) {
 			r.debug("run rpc, err: %+v", err)
-			os.Exit(1)
+			return
 		}
 	}()
 	defer r.rpc.Close()
@@ -343,8 +343,9 @@ type Apply func(commands Commands) (appliedCount int, err error)
 // applyCommitted
 //
 // Implementation:
-// 		If commitIndex > lastApplied: increment lastApplied, apply
-// 		log[lastApplied] to state machine(§5.3)
+//
+//	If commitIndex > lastApplied: increment lastApplied, apply
+//	log[lastApplied] to state machine(§5.3)
 func (r *raft) applyCommitted() error {
 	commitIndex, lastApplied := r.GetCommitIndex(), r.GetLastApplied()
 	if commitIndex <= lastApplied {
@@ -407,8 +408,9 @@ func (r *raft) sendRPCArgs(args rpcArgs) {
 // reactToRPCArgs
 //
 // 实现以下功能:
-// 		If RPC request or response contains term T > currentTerm:
-// 		set currentTerm = T, convert to follower (§5.1)
+//
+//	If RPC request or response contains term T > currentTerm:
+//	set currentTerm = T, convert to follower (§5.1)
 func (r *raft) reactToRPCArgs(args rpcArgs) (server server, converted bool, err error) {
 	if args.getTerm() > r.GetCurrentTerm() {
 		r.debug("React to args(term: %d, type: %q)",
